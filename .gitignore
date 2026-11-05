@@ -1,0 +1,26 @@
+# data and large artifacts (never commit)
+data/
+casmi_data/
+artifacts/
+outputs/
+submissions/
+*.parquet
+*.zip
+*.npz
+*.npy
+*.pt
+*.pkl
+*.ckpt
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+# editor files
+.cursor/
+.vscode/
+.idea/
+.env
+kaggle.json
