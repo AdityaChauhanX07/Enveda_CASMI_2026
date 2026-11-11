@@ -15,6 +15,8 @@ casmi/metric.py       exact copy of the official canonicalization + MRR@25 score
 casmi/adducts.py      adduct table and neutral-mass computation
 casmi/data.py         parquet loaders (metadata-only, np-examples, peaks)
 casmi/submission.py   dedupe by scorer key, fill to 25, validate the CSV
+casmi/spectra.py      spectrum cleaning, spectral entropy similarity
+tools/kaggle_www.py   Kaggle CLI routed through www.kaggle.com (when api.kaggle.com is blocked)
 tests/                metric regression tests (official examples)
 ```
 

@@ -1,6 +1,16 @@
 # CASMI 2026 — facts, landscape, strategy, schedule
 
-Last updated: 2026-11-05. Final deadline 2026-12-14 23:59 UTC (entry/merge 2026-12-07).
+Last updated: 2026-11-11. Final deadline 2026-12-14 23:59 UTC (entry/merge 2026-12-07).
+
+## 0. Status (2026-11-11)
+
+- Leaderboard: #1 0.540, #2 0.539, #3 0.534, #10 0.503, #20 0.495; 5,152 teams. Public notebooks now 0.487-0.500.
+- First two submissions in flight: private forks `adityachauhanx/casmi26-fork-ozertuu-v21` (claims 0.500+, all
+  inputs public) and `adityachauhanx/casmi26-fork-alexchilton-0487` (control). heliosli's 0.488 hides 6 inputs.
+- Local: RDKit 2026.03.3 installed (matches the scorer); Kaggle CLI works via `tools/kaggle_www.py`.
+- Panel benchmark downloaded to `../casmi_data/ext/panel`. Caveat: 249/250 answers are well-documented COCONUT
+  natural products and the ranking models saw them, so the documentation prior looks far stronger there
+  (0.51 -> 0.95) than it can be on hidden class-2 molecules. Correct for this before trusting any re-ranker.
 
 ## 1. Verified facts
 
@@ -69,16 +79,18 @@ Borrow the engines, own the measurement and the final decision, add evidence nob
 2. New evidence: more public libraries, test-set networking, class-3 generator.
 3. Better isomer discrimination only where the benchmark shows it is the bottleneck.
 
-## 4. Schedule
+## 4. Schedule (revised 2026-11-11, compressed after a 6-day slip)
 
 | Phase | Dates | Goal | Gate |
 |---|---|---|---|
-| 0 | Nov 5–8 | On the board: fork alexchilton 0.480 (pinned image), measure hidden-run time, 1 library-only probe | ~0.48 reproduced |
-| 1 | Nov 7–14 | NP-Bench (our private LB) | reproduces known public LB deltas (0.465->0.466->0.468->0.482) |
-| 2 | Nov 12–23 | LambdaMART over the union of all engines' evidence | beats hand-tuned fusion on NP-Bench |
-| 3 | Nov 14–Dec 2 | New evidence channels (below) | each shows an NP-Bench gain |
-| 4 | Nov 30–Dec 9 | One hardened notebook | <= 7.5 h, stage time guards, fallback chain |
-| 5 | Dec 10–14 | Freeze Dec 10, clean-fork rerun, pick 2 finals | best validated + one higher-upside variant |
+| 0 | Nov 11-12 | On the board: two public forks (pinned images), record hidden-run time | fork reproduces ~0.49-0.50 |
+| 1 | Nov 12-18 | Re-ranker prototype on the panel + audit of the extra libraries already in the stack | beats the stack's own order on the panel (doc-prior bias corrected) |
+| 2 | Nov 19-28 | Differentiators: test-set networking, class-3 generator, leak-free re-ranker rows | each shows a gain on the benchmark |
+| 3 | Nov 29-Dec 9 | One hardened notebook, stage time guards, fallback chain; <= 3 LB checks/day | <= 7.5 h, no failed reruns |
+| 4 | Dec 10-14 | Freeze Dec 10, clean-fork rerun, pick 2 finals | best validated + one higher-upside variant |
+
+Additions are overlays on the forked stack's final candidate lists (as the public overlays do), so the stack's
+runtime and candidate set stay intact and every overlay can fall back to the stack's own answer.
 
 **NP-Bench (phase 1).** Queries: 250 np-examples (fold-safe models only) + newly released public spectra of
 structures absent from train.parquet (leak-free for every public model, natural class-2 behaviour).
@@ -108,7 +120,7 @@ Parked: full de novo generators (DiffMS/MSNovelist-style, ~0–2 % exact match);
 ## 5. Compute (no budget)
 
 Kaggle CPU sessions (no weekly quota, 12 h, several in parallel) for bulk evidence generation;
-Kaggle GPU (~30 h/week, check Settings -> Quotas) and TPU (20 h/week) for submissions and training;
+Kaggle GPU 30 h/week and TPU 20 h/week (confirmed on the account) for submissions and training;
 any dev box for ranker training. Big artifacts go to private Kaggle datasets, code to this repo.
 
 ## 6. Operating rules
