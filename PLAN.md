@@ -25,6 +25,23 @@ Last updated: 2026-11-11. Final deadline 2026-12-14 23:59 UTC (entry/merge 2026-
   (`experiments/neighbour_edit_gate.py`): net +0.007 at 25 % class 3, +0.020 at 50 %, break-even ~11 %. To ship:
   run the fold-safe FPNet on the test spectra inside the notebook and score products and list members alike.
 
+### Generator build spec (task in progress)
+
+Notebook cell after the networking overlay, CPU except step 1, fallback to the previous file on any error:
+1. Fold-safe FPNet fold0 (`dmitriigluzdov/casmi26-fold-safe-fpnet/fpnet_fold0.pt`, code in
+   `casmi26-v4b-models/code/casmi/{fpnet,chem,spectra}.py`) on the test spectra, exactly as the engine does
+   (`engine.py` "M: spectrum -> fingerprint model"): items per spectrum (`fpnet.prep_peaks`, `chem.adduct_index`,
+   ce/ce_known/n_merged/mode) and one merged item per polarity (`merge_spectra`, median precursor, majority adduct);
+   z = 0.5 * (mean single logits + mean merged logits). Candidate score = selected bits (`fp_bits.npy`, raw layout
+   ecfp4 4096 | ecfp6 4096 | fcfp4 2048 | rdk6 2048 | ap 2048 | tt 2048 | maccs 167) . z (`casmi/fpscore.py`).
+2. Per molecule, mean/std of that score over <= 200 PubChem-tier structures in the 10 ppm window (pc_mass, pc_off,
+   pc_smiles of the attached pubchem prior) -> z-scores comparable to the panel.
+3. Documentation for list members: mass window in the tier + InChIKey14 match -> lsid + lpmid; products 0.
+4. Products: edits (`experiments/neighbour_edit_oracle.py` EDITS) of the top 3 of every spectral neighbour
+   (cos >= 0.5, >= 4 matches) whose neutral-mass difference matches the edit within 3 mDa.
+5. Insert a product at rank r <= 3 where it beats the list members on z + 0.4 doc with bonus 3; keep 25 entries.
+Check on the panel first: top-3-only insertion and reverse edits (B lighter than A).
+
 ## 1. Verified facts
 
 **Rules (Kaggle API + rules tab).** Featured code competition, notebook-only submissions, internet off,
