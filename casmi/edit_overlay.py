@@ -434,6 +434,11 @@ def relatives_pass(order: list, state: dict, target: dict, spectra: dict, tier: 
         state[b]["scored"] += [(g, smi) for g, smi, _ in rp]
         report["relative_molecules"] += 1; report["relative_products"] += len(rp); done.add(b)
 
+    # window look-ups binary-search the 0.85 GB mass array: on Kaggle's network-mounted datasets each page fault is
+    # slow, so read it into memory once here; forked workers share it (copy-on-write) through _RW
+    if isinstance(tier.mass, np.memmap):
+        tier.mass = np.array(tier.mass)
+    _RW.update(chem=chem, tier=tier, p=p)
     workers = max(1, min(p.get("rel_workers", 4), len(tasks)))
     if workers > 1:
         pool = None
@@ -441,7 +446,7 @@ def relatives_pass(order: list, state: dict, target: dict, spectra: dict, tier: 
             mod = sys.modules.get(__name__)
             if mod is None or getattr(mod, "_rel_task", None) is not _rel_task:
                 raise RuntimeError(f"module {__name__} is not importable by workers")
-            pool = mp.get_context("fork").Pool(workers, initializer=_rel_init, initargs=(tier.root, tier.doc_root, bits, p))
+            pool = mp.get_context("fork").Pool(workers)              # workers inherit _RW (chem, tier, p)
             it = pool.imap_unordered(_rel_task, tasks, chunksize=1)
             while True:
                 left = t_end - time.time()
@@ -462,7 +467,6 @@ def relatives_pass(order: list, state: dict, target: dict, spectra: dict, tier: 
         finally:
             if pool is not None:
                 pool.terminate(); pool.join()
-    _rel_init(tier.root, tier.doc_root, bits, p)
     for task in tasks:
         if task[0] in done:
             continue
