@@ -30,7 +30,10 @@ PARAMS = dict(cos_min=0.5, min_matches=4, top_neighbour=3, beta=3.0, w_doc=0.4, 
               # + 0.5 * log(number of distinct relative/edit routes to the product): class-3 +0.082, class-2 still
               # 0.0000 (halves 0.043 / 0.125, experiments/pubchem_relatives_support.py)
               relatives=0, rel_beta=0.0, rel_w_doc=0.2, rel_w_sup=0.5, rel_w_loss=0.0, rel_n_doc=300, rel_n_full=20,
-              rel_k=3, rel_seconds=1800)
+              rel_k=3, rel_seconds=1800,
+              # neighbour products: "doc" = z + nb_beta + nb_w_doc * source doc + nb_w_sup * log(routes); panel, 2 draws at
+              # 25 % class 3: +0.018 / +0.009 (class-2 -0.001) vs "beta" (z + 3): +0.009 / +0.002 (class-2 -0.003/-0.004)
+              nb_score="doc", nb_beta=0.0, nb_w_doc=0.2, nb_w_sup=0.5)
 FORWARD = {
     "O-methyl": (14.01565, "[OX2H1:1]>>[O:1]C"),
     "N-methyl": (14.01565, "[NX3;H1,H2;!$(NC=O):1]>>[N:1]C"),
@@ -300,8 +303,10 @@ def molecule_spectra(test: pd.DataFrame, v4) -> tuple[dict, dict]:
 
 
 # ---------------- overlay ----------------
-def propose(lists: dict, nbr: dict, target: dict, chem: Chemistry, p: dict, t0: float) -> dict:
-    """molecule -> {key: smiles} edit products not already in its list."""
+def propose(lists: dict, nbr: dict, target: dict, chem: Chemistry, p: dict, t0: float, tier: "Tier | None" = None,
+            meta: dict | None = None) -> dict:
+    """molecule -> {key: smiles} edit products not already in its list. With `tier` and `meta`, also records per
+    product the best documentation of its source candidates and the set of (neighbour, rank, edit) routes."""
     out = {}
     for b, cand in lists.items():
         if time.time() - t0 > p["max_seconds"] / 2:
@@ -314,14 +319,21 @@ def propose(lists: dict, nbr: dict, target: dict, chem: Chemistry, p: dict, t0: 
             if a not in target or a not in lists:
                 continue
             dm = target[b] - target[a]
-            todo = [r for d, r in chem.fwd.values() if abs(dm - d) <= p["mass_tol"]]
-            todo += [r for d, r in chem.rev.values() if abs(dm + d) <= p["mass_tol"]]
-            for rxn in todo:
-                for smi in lists[a][: p["top_neighbour"]]:
+            todo = [("f" + e, r) for e, (d, r) in chem.fwd.items() if abs(dm - d) <= p["mass_tol"]]
+            todo += [("r" + e, r) for e, (d, r) in chem.rev.items() if abs(dm + d) <= p["mass_tol"]]
+            for eid, rxn in todo:
+                for rank, smi in enumerate(lists[a][: p["top_neighbour"]]):
+                    src_doc = None
                     for k, s in chem.products(smi, rxn).items():
                         if k in have or abs(chem.mass(s) - target[b]) > tol_b:
                             continue
                         out.setdefault(b, {})[k] = s
+                        if tier is not None and meta is not None:
+                            if src_doc is None:
+                                m_ = chem.Chem.MolFromSmiles(smi)
+                                src_doc = tier.doc(chem.mass(smi), chem.Chem.MolToInchiKey(m_)[:14]) if m_ is not None else 0.0
+                            e_ = meta.setdefault(b, {}).setdefault(k, [0.0, set()])
+                            e_[0] = max(e_[0], src_doc); e_[1].add((a, rank, eid))
     return out
 
 
@@ -478,7 +490,8 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
     chem = Chemistry(bits)
     spectra, target = molecule_spectra(test, v4)
     nbr = neighbours(test, p)
-    prods = propose(lists, nbr, target, chem, p, t0)
+    nb_meta = {}
+    prods = propose(lists, nbr, target, chem, p, t0, tier, nb_meta)
     report = dict(params=p, molecules=len(lists), with_neighbour=len(nbr), with_products=len(prods),
                   products=sum(len(v) for v in prods.values()), inserted=0, molecules_changed=0)
     new = {}
@@ -522,7 +535,13 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
         scored = []
         for k, s in P.items():
             f = chem.fingerprint(s)
-            if f is not None:
+            if f is None:
+                continue
+            if p["nb_score"] == "doc":
+                src_doc, routes = nb_meta.get(b, {}).get(k, (0.0, {None}))
+                scored.append(((f @ z - mu) / sd + p["nb_beta"] + p["nb_w_doc"] * src_doc
+                               + p["nb_w_sup"] * float(np.log(len(routes))), s))
+            else:
                 scored.append(((f @ z - mu) / sd + p["beta"], s))
         state[b] = dict(z=z, mu=mu, sd=sd, top=top, scored=scored, have={chem.key(s) for s in cand} | set(P))
     if p["relatives"] and state:        # pass 2: PubChem relatives, weakest lists first, under a time budget
