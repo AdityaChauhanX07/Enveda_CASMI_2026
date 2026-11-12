@@ -14,6 +14,7 @@ import json
 import sys
 import time
 import types
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -24,7 +25,10 @@ PARAMS = dict(cos_min=0.5, min_matches=4, top_neighbour=3, beta=3.0, w_doc=0.4, 
               window_ppm=10.0, window_sample=200, mass_tol=0.003, max_seconds=1200, device="cuda", tol=0.01,
               top_n=60, min_rel=0.01, seed=0,
               # PubChem-relative products (class 3): one edit away from the best relatives in PubChem windows M -/+ d
-              relatives=0, rel_beta=2.0, rel_w_loss=0.0, rel_n_doc=500, rel_n_full=20, rel_k=3, rel_seconds=1800)
+              # panel (experiments/pubchem_relatives_merge.py): rel_beta 0 + 0.2 * relative's doc -> class-2 lists 0.0000,
+              # class-3 lists +0.053, net +0.013 at 25 % class 3 (halves +0.007 / +0.020)
+              relatives=0, rel_beta=0.0, rel_w_doc=0.2, rel_w_loss=0.0, rel_n_doc=500, rel_n_full=20, rel_k=3,
+              rel_seconds=1800)
 FORWARD = {
     "O-methyl": (14.01565, "[OX2H1:1]>>[O:1]C"),
     "N-methyl": (14.01565, "[NX3;H1,H2;!$(NC=O):1]>>[N:1]C"),
@@ -221,6 +225,7 @@ class Tier:
         self.mass, self.off, self.smi = L("pc_mass.npy"), L("pc_off.npy"), L("pc_smiles.npy")
         if doc_root is None:
             doc_root = root.parent if (root.parent / "pc_ik14.npy").is_file() else root
+        self.root, self.doc_root = Path(root), Path(doc_root)
         self.ik = np.load(doc_root / "pc_ik14.npy", mmap_mode="r")
         self.lsid = np.load(doc_root / "pc_lsid.npy", mmap_mode="r")
         self.lpmid = np.load(doc_root / "pc_lpmid.npy", mmap_mode="r")
@@ -362,6 +367,7 @@ def relative_products(M: float, z: np.ndarray, mu: float, sd: float, tier: "Tier
                 cand.append(((f @ z - mu_e) / sd_e + 0.3 * doc[j], int(rows[j])))
         cand.sort(key=lambda x: -x[0])
         for _, r in cand[: p["rel_k"]]:
+            rel_doc = float(tier.lsid[r]) + float(tier.lpmid[r])
             for k, smi in chem.products(tier.smiles(r), rx, cap=50).items():
                 if k in seen:
                     continue
@@ -373,8 +379,51 @@ def relative_products(M: float, z: np.ndarray, mu: float, sd: float, tier: "Tier
                     continue
                 seen.add(k)
                 bonus = p["rel_w_loss"] if (sign < 0 and e in losses) else 0.0
-                out.append(((f @ z - mu) / sd + p["rel_beta"] + bonus, smi, k))
+                out.append(((f @ z - mu) / sd + p["rel_beta"] + p["rel_w_doc"] * rel_doc + bonus, smi, k))
     return out
+
+
+_RW = {}
+
+
+def _rel_init(tier_root, doc_root, bits, p):
+    _RW.update(chem=Chemistry(bits), tier=Tier(Path(tier_root), Path(doc_root)), p=p)
+
+
+def _rel_task(args):
+    b, M, z, mu, sd, have, losses = args
+    rng = np.random.default_rng(zlib.crc32(b.encode()))
+    try:
+        return b, relative_products(M, z, mu, sd, _RW["tier"], _RW["chem"], _RW["p"], rng, have, losses)
+    except Exception:
+        return b, []
+
+
+def relatives_pass(order: list, state: dict, target: dict, spectra: dict, tier: "Tier", chem: Chemistry, bits, p: dict,
+                   t_end: float, report: dict) -> None:
+    """PubChem-relative products for the molecules in `order` (weakest lists first) in a process pool, until t_end."""
+    import multiprocessing as mp
+    tasks = [(b, target[b], state[b]["z"], state[b]["mu"], state[b]["sd"], state[b]["have"], loss_edits(spectra[b]))
+             for b in order]
+    report["relative_molecules"] = 0; report["relative_products"] = 0
+    workers = max(1, min(p.get("rel_workers", 4), len(tasks)))
+    if workers == 1:
+        _rel_init(tier.root, tier.doc_root, bits, p)
+        results = map(_rel_task, tasks)
+        pool = None
+    else:
+        pool = mp.get_context("fork").Pool(workers, initializer=_rel_init, initargs=(tier.root, tier.doc_root, bits, p))
+        results = pool.imap_unordered(_rel_task, tasks, chunksize=1)
+    try:
+        for b, rp in results:
+            state[b]["scored"] += [(g, smi) for g, smi, _ in rp]
+            report["relative_molecules"] += 1; report["relative_products"] += len(rp)
+            if time.time() > t_end:
+                report["relatives_stopped_early"] = True
+                break
+    finally:
+        if pool is not None:
+            pool.terminate(); pool.join()
 
 
 def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v4_code=None, fold_model=None,
@@ -413,64 +462,64 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
     todo = list(prods)
     if p["relatives"]:
         todo += [b for b in lists if b not in prods and b in spectra and b in target]
-        report["relative_products"] = 0; report["relative_molecules"] = 0
-    if todo:
-        rng = np.random.default_rng(p["seed"])
-        for b in todo:
-            P = prods.get(b, {})
-            if time.time() - t0 > p["max_seconds"]:
-                report["stopped_early"] = True
-                break
-            z = logits_fn(b) if logits_fn else query_logits(bank, v4, spectra[b])
-            if z is None:
-                continue
-            lo, hi = tier.window(target[b], p["window_ppm"])
-            rows = np.arange(lo, hi) if hi - lo <= p["window_sample"] else np.sort(rng.choice(np.arange(lo, hi), p["window_sample"], replace=False))
-            ref = [chem.fingerprint(tier.smiles(int(r))) for r in rows]
-            ref = np.array([f @ z for f in ref if f is not None])
-            if len(ref) < 10:
-                continue
-            mu, sd = float(ref.mean()), float(ref.std() + 1e-9)
-            cand = lists[b]
-            top = []
-            for s in cand[: p["max_rank"]]:
-                f = chem.fingerprint(s)
-                if f is None:
-                    top.append(np.inf); continue
-                conn = chem.Chem.MolToInchiKey(chem.Chem.MolFromSmiles(s))[:14]
-                top.append((f @ z - mu) / sd + p["w_doc"] * tier.doc(chem.mass(s), conn))
-            scored = []
-            for k, s in P.items():
-                f = chem.fingerprint(s)
-                if f is not None:
-                    scored.append(((f @ z - mu) / sd + p["beta"], s))
-            if p["relatives"] and time.time() - t0 < p["rel_seconds"]:
-                have = {chem.key(s) for s in cand} | set(P)
-                rp = relative_products(target[b], z, mu, sd, tier, chem, p, rng, have, loss_edits(spectra[b]))
-                report["relative_products"] += len(rp); report["relative_molecules"] += 1
-                scored += [(g, smi) for g, smi, _ in rp]
-            scored.sort(key=lambda x: -x[0])
-            if top and top[0] >= p["guard"]:
-                continue
-            slots = {}
-            for sp_, s in scored[: p["max_insert"]]:
-                beaten_by = [i for i, si in enumerate(top) if si >= sp_]
-                r = max((max(beaten_by) + 1) if beaten_by else 0, p["min_slot"])
-                if r < p["max_rank"]:
-                    slots.setdefault(r, []).append(s)
-            if not slots:
-                continue
-            out = []
-            for i, s in enumerate(cand):
-                out.extend(slots.get(i, []))
-                out.append(s)
-            seen, final = set(), []
-            for s in out:
-                k = chem.key(s) or s
-                if k not in seen:
-                    seen.add(k); final.append(s)
-            new[b] = final[:25]
-            report["inserted"] += sum(len(v) for v in slots.values()); report["molecules_changed"] += 1
+    state = {}
+    rng = np.random.default_rng(p["seed"])
+    for b in todo:                      # pass 1: logits, window scale, list-member scores, neighbour products
+        if time.time() - t0 > p["max_seconds"]:
+            report["stopped_early"] = True
+            break
+        P = prods.get(b, {})
+        z = logits_fn(b) if logits_fn else query_logits(bank, v4, spectra[b])
+        if z is None:
+            continue
+        lo, hi = tier.window(target[b], p["window_ppm"])
+        rows = np.arange(lo, hi) if hi - lo <= p["window_sample"] else np.sort(rng.choice(np.arange(lo, hi), p["window_sample"], replace=False))
+        ref = [chem.fingerprint(tier.smiles(int(r))) for r in rows]
+        ref = np.array([f @ z for f in ref if f is not None])
+        if len(ref) < 10:
+            continue
+        mu, sd = float(ref.mean()), float(ref.std() + 1e-9)
+        cand = lists[b]
+        top = []
+        for s in cand[: p["max_rank"]]:
+            f = chem.fingerprint(s)
+            if f is None:
+                top.append(np.inf); continue
+            conn = chem.Chem.MolToInchiKey(chem.Chem.MolFromSmiles(s))[:14]
+            top.append((f @ z - mu) / sd + p["w_doc"] * tier.doc(chem.mass(s), conn))
+        scored = []
+        for k, s in P.items():
+            f = chem.fingerprint(s)
+            if f is not None:
+                scored.append(((f @ z - mu) / sd + p["beta"], s))
+        state[b] = dict(z=z, mu=mu, sd=sd, top=top, scored=scored, have={chem.key(s) for s in cand} | set(P))
+    if p["relatives"] and state:        # pass 2: PubChem relatives, weakest lists first, under a time budget
+        order = sorted(state, key=lambda b: state[b]["top"][0] if state[b]["top"] else -np.inf)
+        order = [b for b in order if not (state[b]["top"] and state[b]["top"][0] >= p["guard"])]
+        relatives_pass(order, state, target, spectra, tier, chem, bits, p, t0 + p["rel_seconds"], report)
+    for b, st in state.items():         # pass 3: insert the best products into the top max_rank slots
+        top, scored, cand = st["top"], sorted(st["scored"], key=lambda x: -x[0]), lists[b]
+        if not scored or (top and top[0] >= p["guard"]):
+            continue
+        slots = {}
+        for sp_, s in scored[: p["max_insert"]]:
+            beaten_by = [i for i, si in enumerate(top) if si >= sp_]
+            r = max((max(beaten_by) + 1) if beaten_by else 0, p["min_slot"])
+            if r < p["max_rank"]:
+                slots.setdefault(r, []).append(s)
+        if not slots:
+            continue
+        out = []
+        for i, s in enumerate(cand):
+            out.extend(slots.get(i, []))
+            out.append(s)
+        seen, final = set(), []
+        for s in out:
+            k = chem.key(s) or s
+            if k not in seen:
+                seen.add(k); final.append(s)
+        new[b] = final[:25]
+        report["inserted"] += sum(len(v) for v in slots.values()); report["molecules_changed"] += 1
     out = sub.copy()
     out["smiles"] = [";".join(new.get(str(m), lists[str(m)])) for m in out.molecule_id]
     assert out.molecule_id.tolist() == sub.molecule_id.tolist()
