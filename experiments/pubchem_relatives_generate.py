@@ -21,7 +21,8 @@ ROOT = Path(__file__).resolve().parents[1]
 EXT = ROOT.parents[0] / "casmi_data" / "ext"
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "experiments"))
 
-N_DOC, N_SAMPLE, N_FULL, K_REL, PPM = 500, 100, 20, 3, 10.0
+N_DOC, N_SAMPLE, N_FULL, K_REL = (int(x) for x in __import__("os").environ.get("REL_CFG", "500,100,20,3").split(","))
+PPM = 10.0
 G = {}
 
 
@@ -116,5 +117,5 @@ if __name__ == "__main__":
             if i % 25 == 0:
                 print(f"{i + 1}/{len(args)} molecules, {len(rows)} products, {time.time() - t0:.0f}s", flush=True)
     out = pd.DataFrame(rows)
-    out.to_parquet(ROOT / "artifacts" / "relatives_products.parquet")
+    out.to_parquet(ROOT / "artifacts" / __import__("os").environ.get("REL_OUT", "relatives_products.parquet"))
     print(f"done: {len(out)} products for {out.molecule.nunique()} molecules in {time.time() - t0:.0f}s")

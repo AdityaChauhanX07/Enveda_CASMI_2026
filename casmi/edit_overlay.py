@@ -29,7 +29,7 @@ PARAMS = dict(cos_min=0.5, min_matches=4, top_neighbour=3, beta=3.0, w_doc=0.4, 
               # class-3 lists +0.053, net +0.013 at 25 % class 3 (halves +0.007 / +0.020)
               # + 0.5 * log(number of distinct relative/edit routes to the product): class-3 +0.082, class-2 still
               # 0.0000 (halves 0.043 / 0.125, experiments/pubchem_relatives_support.py)
-              relatives=0, rel_beta=0.0, rel_w_doc=0.2, rel_w_sup=0.5, rel_w_loss=0.0, rel_n_doc=500, rel_n_full=20,
+              relatives=0, rel_beta=0.0, rel_w_doc=0.2, rel_w_sup=0.5, rel_w_loss=0.0, rel_n_doc=300, rel_n_full=20,
               rel_k=3, rel_seconds=1800)
 FORWARD = {
     "O-methyl": (14.01565, "[OX2H1:1]>>[O:1]C"),
@@ -352,25 +352,27 @@ def relative_products(M: float, z: np.ndarray, mu: float, sd: float, tier: "Tier
         lo, hi = tier.window(M + sign * d, p["window_ppm"])
         if hi <= lo:
             continue
-        rows = np.arange(lo, hi)
         doc = np.asarray(tier.lsid[lo:hi], np.float64) + np.asarray(tier.lpmid[lo:hi], np.float64)
-        sample = rows if len(rows) <= 30 else rng.choice(rows, 30, replace=False)
-        ref = [chem.fingerprint(tier.smiles(int(r))) for r in sample]
+        offs = np.asarray(tier.off[lo:hi + 1], np.int64)                 # one contiguous read per window
+        blob = bytes(tier.smi[offs[0]:offs[-1]])
+        smi_at = lambda j: blob[offs[j] - offs[0]:offs[j + 1] - offs[0]].decode()
+        sample = np.arange(hi - lo) if hi - lo <= 30 else rng.choice(hi - lo, 30, replace=False)
+        ref = [chem.fingerprint(smi_at(int(j))) for j in sample]
         ref = np.array([f @ z for f in ref if f is not None])
         if len(ref) < 5:
             continue
         mu_e, sd_e = ref.mean(), ref.std() + 1e-9
         keep = np.argsort(-doc, kind="stable")[: p["rel_n_doc"]]
-        part = np.array([chem.partial(tier.smiles(int(rows[j])), z_e) for j in keep])
+        part = np.array([chem.partial(smi_at(int(j)), z_e) for j in keep])
         cand = []
         for j in keep[np.argsort(-part, kind="stable")[: p["rel_n_full"]]]:
-            f = chem.fingerprint(tier.smiles(int(rows[j])))
+            f = chem.fingerprint(smi_at(int(j)))
             if f is not None:
-                cand.append(((f @ z - mu_e) / sd_e + 0.3 * doc[j], int(rows[j])))
+                cand.append(((f @ z - mu_e) / sd_e + 0.3 * doc[j], int(j)))
         cand.sort(key=lambda x: -x[0])
-        for _, r in cand[: p["rel_k"]]:
-            rel_doc = float(tier.lsid[r]) + float(tier.lpmid[r])
-            for k, smi in chem.products(tier.smiles(r), rx, cap=50).items():
+        for _, j in cand[: p["rel_k"]]:
+            r, rel_doc = lo + j, float(doc[j])
+            for k, smi in chem.products(smi_at(j), rx, cap=50).items():
                 if k in have:
                     continue
                 if k not in acc:
