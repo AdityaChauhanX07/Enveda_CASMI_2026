@@ -407,29 +407,55 @@ def _rel_task(args):
 
 def relatives_pass(order: list, state: dict, target: dict, spectra: dict, tier: "Tier", chem: Chemistry, bits, p: dict,
                    t_end: float, report: dict) -> None:
-    """PubChem-relative products for the molecules in `order` (weakest lists first) in a process pool, until t_end."""
+    """PubChem-relative products for the molecules in `order` (weakest lists first) until t_end. Runs in a process
+    pool; any pool failure (pickling, start-up) falls back to the same work in this process. Results are awaited with
+    a deadline, so a stuck worker cannot hold the notebook past t_end."""
     import multiprocessing as mp
     tasks = [(b, target[b], state[b]["z"], state[b]["mu"], state[b]["sd"], state[b]["have"], loss_edits(spectra[b]))
              for b in order]
     report["relative_molecules"] = 0; report["relative_products"] = 0
+    done = set()
+
+    def absorb(b, rp):
+        state[b]["scored"] += [(g, smi) for g, smi, _ in rp]
+        report["relative_molecules"] += 1; report["relative_products"] += len(rp); done.add(b)
+
     workers = max(1, min(p.get("rel_workers", 4), len(tasks)))
-    if workers == 1:
-        _rel_init(tier.root, tier.doc_root, bits, p)
-        results = map(_rel_task, tasks)
+    if workers > 1:
         pool = None
-    else:
-        pool = mp.get_context("fork").Pool(workers, initializer=_rel_init, initargs=(tier.root, tier.doc_root, bits, p))
-        results = pool.imap_unordered(_rel_task, tasks, chunksize=1)
-    try:
-        for b, rp in results:
-            state[b]["scored"] += [(g, smi) for g, smi, _ in rp]
-            report["relative_molecules"] += 1; report["relative_products"] += len(rp)
-            if time.time() > t_end:
-                report["relatives_stopped_early"] = True
-                break
-    finally:
-        if pool is not None:
-            pool.terminate(); pool.join()
+        try:
+            mod = sys.modules.get(__name__)
+            if mod is None or getattr(mod, "_rel_task", None) is not _rel_task:
+                raise RuntimeError(f"module {__name__} is not importable by workers")
+            pool = mp.get_context("fork").Pool(workers, initializer=_rel_init, initargs=(tier.root, tier.doc_root, bits, p))
+            it = pool.imap_unordered(_rel_task, tasks, chunksize=1)
+            while True:
+                left = t_end - time.time()
+                if left <= 0:
+                    report["relatives_stopped_early"] = True
+                    break
+                try:
+                    b, rp = it.next(timeout=left)
+                except StopIteration:
+                    break
+                except mp.TimeoutError:
+                    report["relatives_stopped_early"] = True
+                    break
+                absorb(b, rp)
+            return
+        except Exception as e:                     # fall back to this process for whatever is left
+            report["relatives_pool_error"] = repr(e)[:200]
+        finally:
+            if pool is not None:
+                pool.terminate(); pool.join()
+    _rel_init(tier.root, tier.doc_root, bits, p)
+    for task in tasks:
+        if task[0] in done:
+            continue
+        if time.time() > t_end:
+            report["relatives_stopped_early"] = True
+            break
+        absorb(*_rel_task(task))
 
 
 def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v4_code=None, fold_model=None,

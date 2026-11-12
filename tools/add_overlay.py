@@ -69,7 +69,9 @@ else:
         _p = _P('/kaggle/working/p2s_code/edit_overlay.py'); _p.parent.mkdir(parents=True, exist_ok=True)
         _p.write_text(_EDIT_SRC)
         import importlib.util as _ilu
-        _spec = _ilu.spec_from_file_location('edit_overlay', _p); _eo = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_eo)
+        _spec = _ilu.spec_from_file_location('edit_overlay', _p); _eo = _ilu.module_from_spec(_spec)
+        import sys as _sys; _sys.modules['edit_overlay'] = _eo     # worker processes find the module by name
+        _spec.loader.exec_module(_eo)
         _sub = _P('/kaggle/working/submission.csv'); shutil.copy2(_sub, '/kaggle/working/submission_before_edit.csv')
         _rep = _eo.apply(COMP / 'test.parquet', _sub, '/kaggle/working/submission_edit.csv', '/kaggle/working/edit_report.json',
                          _EDIT_PARAMS)
