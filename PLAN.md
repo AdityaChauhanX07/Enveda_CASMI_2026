@@ -1,53 +1,40 @@
 # CASMI 2026 — facts, landscape, strategy, schedule
 
-Last updated: 2026-11-11. Final deadline 2026-12-14 23:59 UTC (entry/merge 2026-12-07).
+Last updated: 2026-11-12. Final deadline 2026-12-14 23:59 UTC (entry/merge 2026-12-07).
 
-## 0. Status (2026-11-12)
+## 0. Status (2026-11-12, 08:30 UTC)
 
-- Leaderboard: #1 0.540, #2 0.539, #3 0.534, #10 0.503, #20 0.495; 5,152 teams. Public notebooks 0.487-0.500.
-- Fork A (`casmi26-fork-ozertuu-v21`, submission 58253021) failed in the hidden rerun. Two upstream bugs, also in
-  the author's latest version: its pinned image has no GPU driver (the pipeline's preflight asserts nvidia-smi),
-  and its model swap never writes `config.json`. Patched copy `casmi26-a2-ozertuu-fixed` (Fork B's swap cell and
-  Fork B's image) is being smoke-tested. Fork B (`casmi26-fork-alexchilton-0487`, 58253022) scored 0.487 public, an exact reproduction (rerun ~4.5 h).
-- Scoring reruns occupy the account's 2 concurrent batch-GPU slots (push refused: "Maximum batch GPU session count
-  of 2 reached") and draw on the weekly 30 GPU h (API: 25.3 h used on Nov 12, reset Saturday 00:00 UTC). At ~4.5 h
-  per rerun plus ~0.5 h per smoke commit the real budget is ~5-6 submissions per week, so the LB is only a check
-  for benchmark-backed changes, never a tuning tool. Fixed Fork A (58257995) scored 0.486, Fork B 0.487.
-- Rule from now on: every new notebook is committed once with `COMMIT_MODE='smoke'` (all stages on 12 visible
-  molecules, ~30-60 GPU min) and only that verified version is submitted.
-- Panel harness on CPU (`casmi/panel.py`): PubChem channel with the fold-safe FPNet 0.208 alone, 0.826 with the
-  documentation prior (doc alone 0.773; leaky A+B FPNet 0.406, so leakage doubles the spectral score).
-- Networking (`casmi/network.py`): 32 % of panel molecules have a spectral neighbour at modified cosine >= 0.8.
-  Adding the neighbours' likely structures to the score lifted MRR in every setting (0.826 -> 0.834-0.839); as a
-  rank-only top-25 overlay +0.006-0.011 with some churn. Overlay ready (`casmi/network_overlay.py`,
-  `tools/add_overlay.py`), 6 s on the 400-molecule visible test.
-- Neighbour edits (`experiments/neighbour_edit_oracle.py`): one modification of a partner's true structure
-  reproduces 47/250 panel molecules exactly, ~3 products per edit. Basis for the class-3 generator.
-- Realistic version (`experiments/neighbour_edit_panel.py`): edits of the neighbour's top-3 candidates regenerate the
-  removed answer for 29-30/250 molecules, but inserting the products without a gate costs more on class-2 lists than
-  it gains (`experiments/neighbour_edit_insert.py`). Gated by the fold-safe FPNet score with a bonus of 3
-  (`experiments/neighbour_edit_gate.py`): net +0.007 at 25 % class 3, +0.020 at 50 %, break-even ~11 %. To ship:
-  run the fold-safe FPNet on the test spectra inside the notebook and score products and list members alike.
+**Leaderboard.** #1 0.540, #2 0.539, #3 0.534, #4 0.527, #5 0.510, #10 ~0.503, #20 0.497. Public notebooks top out at
+~0.500. Ours: Fork B 0.487 (58253022), fixed Fork A 0.486 (58257995), fixed Fork A + networking 0.486 (58258520).
 
-### Generator build spec (task in progress)
+**Budget.** Scoring reruns count against the weekly 30 GPU h (API `GetAcceleratorQuotaStatistics`, reset Saturday
+00:00 UTC; 26 h used this week). A rerun takes ~4.5 h, a smoke commit ~0.5-1 h, so ~5-6 submissions per week. The LB
+(~125 molecules, 31 % of the test) cannot resolve gains below ~0.005: it is a crash check and a coarse sanity check,
+never a tuning tool. Only 2 batch-GPU sessions run at once. CPU-only Kaggle jobs are free and used for model runs
+on the panel (`casmi26-fs-panel-logits`, `casmi26-fs-panel-spectra`, `casmi26-rel-cpu-check`).
 
-Notebook cell after the networking overlay, CPU except step 1, fallback to the previous file on any error:
-1. Fold-safe FPNet fold0 (`dmitriigluzdov/casmi26-fold-safe-fpnet/fpnet_fold0.pt`, code in
-   `casmi26-v4b-models/code/casmi/{fpnet,chem,spectra}.py`) on the test spectra, exactly as the engine does
-   (`engine.py` "M: spectrum -> fingerprint model"): items per spectrum (`fpnet.prep_peaks`, `chem.adduct_index`,
-   ce/ce_known/n_merged/mode) and one merged item per polarity (`merge_spectra`, median precursor, majority adduct);
-   z = 0.5 * (mean single logits + mean merged logits). Candidate score = selected bits (`fp_bits.npy`, raw layout
-   ecfp4 4096 | ecfp6 4096 | fcfp4 2048 | rdk6 2048 | ap 2048 | tt 2048 | maccs 167) . z (`casmi/fpscore.py`).
-2. Per molecule, mean/std of that score over <= 200 PubChem-tier structures in the 10 ppm window (pc_mass, pc_off,
-   pc_smiles of the attached pubchem prior) -> z-scores comparable to the panel.
-3. Documentation for list members: mass window in the tier + InChIKey14 match -> lsid + lpmid; products 0.
-4. Products: edits (`experiments/neighbour_edit_oracle.py` EDITS) of the top 3 of every spectral neighbour
-   (cos >= 0.5, >= 4 matches) whose neutral-mass difference matches the edit within 3 mDa.
-5. Insert a product at rank r <= 3 where it beats the list members on z + 0.4 doc with bonus 3; keep 25 entries.
-   Also reverse edits (B lighter than A: remove O-methyl, OH, hexose, deoxyhexose, acetyl). Panel, beta 3, top-3:
-   net +0.011 at 25 % class 3, break-even ~7 % (forward only +0.007).
-   Module `casmi/edit_overlay.py` end to end, mixed 25 % class-3 simulation: +0.002 / +0.005 (class-2 lists
-   -0.0045). Ship only after a class-2 guard (library-hit / leader-confidence gate) shows a better trade-off.
+**Rules.** Host (thread 752297): automated, unsupervised processing across test spectra at inference is allowed
+(networking, neighbour edits). Open NC data allowed, NIST not. Class shares stay hidden; class 3 may be concentrated
+in the private 69 % (speculation, thread 755039), so class-3 gains matter more than the public LB shows.
+
+**Panel findings (250 np-examples, fold-safe models only, `docs/log.md` has every number).**
+- Misses are close calls between same-formula isomers (61 of 65); formula or mass-error priors add nothing.
+- Five fold-safe FPNets averaged: 0.243 alone / 0.840-0.845 with documentation vs 0.208 / 0.826 for fold 0.
+  Shipping them inside the fork's PubChem channel is pointless (A+B logits are ~11x larger); used in our overlay.
+- Second-opinion re-ranking of fork-like lists: <= +0.003. Spectrum weighting / pooling variants: no gain.
+- Networking overlay: +0.006-0.011 on the panel, LB-neutral (0.486 vs 0.486). Kept.
+- Neighbour-edit generator with the ensemble gate: +0.005 at 25 % class 3 (class-2 cost -0.003 to -0.004).
+- PubChem-relative generator (new): 99 % of panel answers have a one-edit relative in PubChem. Products of the
+  top-3 relatives per edit window (13 edits each way), scored z + 0.2 x relative documentation + 0.5 x log(routes):
+  class-2 lists 0.0000 (no molecule hurt, also for the least documented 20 %), class-3 lists +0.082, net +0.021
+  at 25 % class 3. In `casmi/edit_overlay.py` (`relatives=1`), pooled over 4 processes, weakest lists first,
+  40 min budget.
+
+**Notebooks.** a4 = Fork A + networking + neighbour edits (ensemble): smoke run passed. a5 = a4 + PubChem relatives:
+built, waiting for the end-to-end panel check and the Kaggle CPU runtime check, then a GPU smoke run.
+
+**Next.** (1) Saturday after the quota reset: submit a5. (2) Generator recall/ranking (more relatives, NP acyl and
+sulfate edits, 2-step edits), validated on the panel. (3) Look for a class-2 lever beyond the shared stack.
 
 ## 1. Verified facts
 
