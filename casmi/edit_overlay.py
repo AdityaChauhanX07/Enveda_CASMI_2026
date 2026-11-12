@@ -188,10 +188,11 @@ class Chemistry:
 class Tier:
     """Memory-mapped PubChem tier: masses (sorted), SMILES, connectivity keys and documentation counts."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, doc_root: Path | None = None):
         L = lambda n, **kw: np.load(root / n, mmap_mode="r", **kw)
         self.mass, self.off, self.smi = L("pc_mass.npy"), L("pc_off.npy"), L("pc_smiles.npy")
-        doc_root = root.parent if (root.parent / "pc_ik14.npy").is_file() else root
+        if doc_root is None:
+            doc_root = root.parent if (root.parent / "pc_ik14.npy").is_file() else root
         self.ik = np.load(doc_root / "pc_ik14.npy", mmap_mode="r")
         self.lsid = np.load(doc_root / "pc_lsid.npy", mmap_mode="r")
         self.lpmid = np.load(doc_root / "pc_lpmid.npy", mmap_mode="r")
@@ -300,7 +301,12 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
     v4 = v4 or _load_v4(Path(v4_code) if v4_code else _find("casmi26-v4b-models/code/casmi/fpnet.py").parent)
     fold_model = Path(fold_model) if fold_model else _find("casmi26-fold-safe-fpnet/fpnet_fold0.pt")
     bits = np.load(fp_bits) if fp_bits else np.load(fold_model.parent / "fp_bits.npy")
-    tier = Tier(Path(tier_root) if tier_root else _find("casmi26-pubchem-tier/pc_mass.npy").parent)
+    if tier_root:
+        tier = Tier(Path(tier_root))
+    else:
+        doc = _find("pc_ik14.npy").parent
+        tier = Tier(doc / "casmi26-pubchem-tier" if (doc / "casmi26-pubchem-tier" / "pc_mass.npy").is_file()
+                    else _find("casmi26-pubchem-tier/pc_mass.npy").parent, doc)
     chem = Chemistry(bits)
     spectra, target = molecule_spectra(test, v4)
     nbr = neighbours(test, p)
@@ -308,8 +314,14 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
     report = dict(params=p, molecules=len(lists), with_neighbour=len(nbr), with_products=len(prods),
                   products=sum(len(v) for v in prods.values()), inserted=0, molecules_changed=0)
     new = {}
+    bank = None
+    if not logits_fn and spectra:
+        bank = v4["fpnet"].ModelBank([str(fold_model)], device=p["device"])
+        first = next(iter(spectra))
+        z0 = query_logits(bank, v4, spectra[first])
+        report["model_check"] = dict(molecule=first, bits=int(len(z0)), mean_logit=round(float(z0.mean()), 3),
+                                     finite=bool(np.isfinite(z0).all()))
     if prods:
-        bank = None if logits_fn else v4["fpnet"].ModelBank([str(fold_model)], device=p["device"])
         rng = np.random.default_rng(p["seed"])
         for b, P in prods.items():
             if time.time() - t0 > p["max_seconds"]:

@@ -9,6 +9,9 @@ Last updated: 2026-11-11. Final deadline 2026-12-14 23:59 UTC (entry/merge 2026-
   the author's latest version: its pinned image has no GPU driver (the pipeline's preflight asserts nvidia-smi),
   and its model swap never writes `config.json`. Patched copy `casmi26-a2-ozertuu-fixed` (Fork B's swap cell and
   Fork B's image) is being smoke-tested. Fork B (`casmi26-fork-alexchilton-0487`, 58253022) scored 0.487 public, an exact reproduction (rerun ~4.5 h).
+- Scoring reruns occupy the account's 2 concurrent batch-GPU slots (push refused: "Maximum batch GPU session count
+  of 2 reached"), so at most 2 submissions or commits run at once. Unknown: whether reruns (~4.5 h each) also
+  draw on the weekly 30 GPU h; check Settings > quota after today's runs before planning >2 submissions/day.
 - Rule from now on: every new notebook is committed once with `COMMIT_MODE='smoke'` (all stages on 12 visible
   molecules, ~30-60 GPU min) and only that verified version is submitted.
 - Panel harness on CPU (`casmi/panel.py`): PubChem channel with the fold-safe FPNet 0.208 alone, 0.826 with the
