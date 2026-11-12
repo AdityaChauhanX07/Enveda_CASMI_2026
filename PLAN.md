@@ -40,7 +40,8 @@ Notebook cell after the networking overlay, CPU except step 1, fallback to the p
 4. Products: edits (`experiments/neighbour_edit_oracle.py` EDITS) of the top 3 of every spectral neighbour
    (cos >= 0.5, >= 4 matches) whose neutral-mass difference matches the edit within 3 mDa.
 5. Insert a product at rank r <= 3 where it beats the list members on z + 0.4 doc with bonus 3; keep 25 entries.
-Check on the panel first: top-3-only insertion and reverse edits (B lighter than A).
+   Also reverse edits (B lighter than A: remove O-methyl, OH, hexose, deoxyhexose, acetyl). Panel, beta 3, top-3:
+   net +0.011 at 25 % class 3, break-even ~7 % (forward only +0.007).
 
 ## 1. Verified facts
 

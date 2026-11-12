@@ -17,10 +17,18 @@ from casmi.fpscore import fingerprint  # noqa: E402
 from casmi.metric import ik14  # noqa: E402
 from casmi.panel import load_candidates, tier_smiles, zscore  # noqa: E402
 from neighbour_edit_oracle import EDITS  # noqa: E402
+from rdkit.Chem import AllChem  # noqa: E402
 from network_panel import shortlist  # noqa: E402
 
 RDLogger.DisableLog("rdApp.*")
 W_DOC = 0.4
+REVERSE = {  # name: (mass delta, reaction removing the group from the heavier structure)
+    "O-methyl": (14.01565, "[CH3][OX2:1][#6:2]>>[O:1][#6:2]"),
+    "OH": (15.99491, "[OX2H1][#6:1]>>[#6:1]"),
+    "hexose": (162.05282, "[O:1]C1OC(CO)C(O)C(O)C1O>>[O:1]"),
+    "deoxyhexose": (146.05791, "[O:1]C1OC(C)C(O)C(O)C1O>>[O:1]"),
+    "acetyl": (42.01057, "[O:1]C(C)=O>>[O:1]"),
+}
 
 
 def edit_products(mol, rxn, cap=400):
@@ -51,14 +59,17 @@ if __name__ == "__main__":
     mass = {k: rdMolDescriptors.CalcExactMolWt(Chem.MolFromSmiles(s)) for k, s in zip(t.inchikey14, t.normalized_smiles)}
     g = pd.read_parquet(ROOT / "artifacts" / "np_graph.parquet")
     e = g[(g.cosine >= 0.5) & (g.matches >= 4)]
+    rev = {k: (dm_, AllChem.ReactionFromSmarts(sm)) for k, (dm_, sm) in REVERSE.items()}
+    use_reverse = "--reverse" in sys.argv
     prods = {}
     for a, b in list(zip(e.a, e.b)) + list(zip(e.b, e.a)):
         if a not in lists or b not in lists or b not in logit:
             continue
         dm = mass[b] - mass[a]
-        for name, (delta, rxn) in EDITS.items():
-            if abs(dm - delta) > 0.003:
-                continue
+        todo = [(delta, rxn) for delta, rxn in EDITS.values() if abs(dm - delta) <= 0.003]
+        if use_reverse:
+            todo += [(delta, rxn) for delta, rxn in rev.values() if abs(dm + delta) <= 0.003]
+        for delta, rxn in todo:
             for smi in lists[a].smiles.tolist()[:3]:
                 for k, s in edit_products(Chem.MolFromSmiles(smi), rxn).items():
                     fp = fingerprint(s)
@@ -74,7 +85,7 @@ if __name__ == "__main__":
                 return 1.0 / (i + 1)
         return 0.0
 
-    for beta in (0.0, 1.0, 2.0, 3.0, 5.0):
+    for beta in (2.0, 3.0, 4.0):
         g2 = g3 = 0.0
         for m, P in prods.items():
             L_ = lists[m]
@@ -87,6 +98,12 @@ if __name__ == "__main__":
                 for k, zz in P.items():
                     merged[k] = max(merged.get(k, -1e9), zz + beta) if k not in merged else merged[k] + 0.0
                 order = [k for k, _ in sorted(merged.items(), key=lambda x: -x[1])]
+                if "--top3" in sys.argv:
+                    before_keys = [k for _, k in items]
+                    ins = [k for k in order[:3] if k not in before_keys]
+                    rest = [k for k in before_keys if k not in ins]
+                    order = [k for k in order[:3] if k in ins or k in rest[:3]]
+                    order = order + [k for k in rest if k not in order]
                 before = [k for _, k in items]
                 delta = rr(order, truth[m]) - rr(before, truth[m])
                 if drop_truth:
