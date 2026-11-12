@@ -2,15 +2,23 @@
 
 Last updated: 2026-11-11. Final deadline 2026-12-14 23:59 UTC (entry/merge 2026-12-07).
 
-## 0. Status (2026-11-11)
+## 0. Status (2026-11-12)
 
-- Leaderboard: #1 0.540, #2 0.539, #3 0.534, #10 0.503, #20 0.495; 5,152 teams. Public notebooks now 0.487-0.500.
-- First two submissions in flight: private forks `adityachauhanx/casmi26-fork-ozertuu-v21` (claims 0.500+, all
-  inputs public) and `adityachauhanx/casmi26-fork-alexchilton-0487` (control). heliosli's 0.488 hides 6 inputs.
-- Local: RDKit 2026.03.3 installed (matches the scorer); Kaggle CLI works via `tools/kaggle_www.py`.
-- Panel benchmark downloaded to `../casmi_data/ext/panel`. Caveat: 249/250 answers are well-documented COCONUT
-  natural products and the ranking models saw them, so the documentation prior looks far stronger there
-  (0.51 -> 0.95) than it can be on hidden class-2 molecules. Correct for this before trusting any re-ranker.
+- Leaderboard: #1 0.540, #2 0.539, #3 0.534, #10 0.503, #20 0.495; 5,152 teams. Public notebooks 0.487-0.500.
+- Fork A (`casmi26-fork-ozertuu-v21`, submission 58253021) failed in the hidden rerun. Two upstream bugs, also in
+  the author's latest version: its pinned image has no GPU driver (the pipeline's preflight asserts nvidia-smi),
+  and its model swap never writes `config.json`. Patched copy `casmi26-a2-ozertuu-fixed` (Fork B's swap cell and
+  Fork B's image) is being smoke-tested. Fork B (`casmi26-fork-alexchilton-0487`, 58253022) is still scoring.
+- Rule from now on: every new notebook is committed once with `COMMIT_MODE='smoke'` (all stages on 12 visible
+  molecules, ~30-60 GPU min) and only that verified version is submitted.
+- Panel harness on CPU (`casmi/panel.py`): PubChem channel with the fold-safe FPNet 0.208 alone, 0.826 with the
+  documentation prior (doc alone 0.773; leaky A+B FPNet 0.406, so leakage doubles the spectral score).
+- Networking (`casmi/network.py`): 32 % of panel molecules have a spectral neighbour at modified cosine >= 0.8.
+  Adding the neighbours' likely structures to the score lifted MRR in every setting (0.826 -> 0.834-0.839); as a
+  rank-only top-25 overlay +0.006-0.011 with some churn. Overlay ready (`casmi/network_overlay.py`,
+  `tools/add_overlay.py`), 6 s on the 400-molecule visible test.
+- Neighbour edits (`experiments/neighbour_edit_oracle.py`): one modification of a partner's true structure
+  reproduces 47/250 panel molecules exactly, ~3 products per edit. Basis for the class-3 generator.
 
 ## 1. Verified facts
 
@@ -83,8 +91,8 @@ Borrow the engines, own the measurement and the final decision, add evidence nob
 
 | Phase | Dates | Goal | Gate |
 |---|---|---|---|
-| 0 | Nov 11-12 | On the board: two public forks (pinned images), record hidden-run time | fork reproduces ~0.49-0.50 |
-| 1 | Nov 12-18 | Re-ranker prototype on the panel + audit of the extra libraries already in the stack | beats the stack's own order on the panel (doc-prior bias corrected) |
+| 0 | Nov 11-13 | On the board: Fork B score, patched Fork A (smoke-tested) | a fork reproduces ~0.49-0.50 |
+| 1 | Nov 12-18 | Networking overlay on the best fork (first LB A/B), neighbour-edit generator, re-ranker prototype on leak-free panel features | each beats the base on the panel |
 | 2 | Nov 19-28 | Differentiators: test-set networking, class-3 generator, leak-free re-ranker rows | each shows a gain on the benchmark |
 | 3 | Nov 29-Dec 9 | One hardened notebook, stage time guards, fallback chain; <= 3 LB checks/day | <= 7.5 h, no failed reruns |
 | 4 | Dec 10-14 | Freeze Dec 10, clean-fork rerun, pick 2 finals | best validated + one higher-upside variant |
