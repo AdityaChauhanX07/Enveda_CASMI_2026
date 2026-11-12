@@ -21,8 +21,9 @@ Last updated: 2026-11-11. Final deadline 2026-12-14 23:59 UTC (entry/merge 2026-
   reproduces 47/250 panel molecules exactly, ~3 products per edit. Basis for the class-3 generator.
 - Realistic version (`experiments/neighbour_edit_panel.py`): edits of the neighbour's top-3 candidates regenerate the
   removed answer for 29-30/250 molecules, but inserting the products without a gate costs more on class-2 lists than
-  it gains (`experiments/neighbour_edit_insert.py`). Next: score products with the fold-safe FPNet and insert only
-  when a product beats the list's own candidates.
+  it gains (`experiments/neighbour_edit_insert.py`). Gated by the fold-safe FPNet score with a bonus of 3
+  (`experiments/neighbour_edit_gate.py`): net +0.007 at 25 % class 3, +0.020 at 50 %, break-even ~11 %. To ship:
+  run the fold-safe FPNet on the test spectra inside the notebook and score products and list members alike.
 
 ## 1. Verified facts
 
