@@ -1,6 +1,6 @@
 """Append the networking overlay as the last cell of a forked notebook.
 
-Usage: python tools/add_overlay.py IN.ipynb OUT.ipynb [lam] [--edit]   (--edit also appends the edit generator)
+Usage: python tools/add_overlay.py IN.ipynb OUT.ipynb [lam] [--edit [--relatives]]   (--edit also appends the edit generator)
 The cell runs after every layer of the fork, re-orders submission.csv in place and keeps the fork's file on any
 error. It is skipped in a fast commit (dummy answers).
 """
@@ -57,18 +57,22 @@ EDIT_CELL = '''# ── Neighbour-edit generator: one-modification products of s
 import json, shutil, time, traceback
 from pathlib import Path as _P
 _EDIT_SRC = {src!r}
+_EDIT_PARAMS = {params!r}
 _fast = (not globals().get('PIPELINE_DONE', True)) and (not globals().get('IS_RERUN', False)) and globals().get('COMMIT_MODE') == 'fast'
-_late = time.time() - globals().get('NB_T0', time.time()) > 8.0 * 3600
-if _fast or _late:
+_left = 8.5 * 3600 - (time.time() - globals().get('NB_T0', time.time()))      # the fork's own stages stop at 8.55-8.65 h
+if _fast or _left < 600:
     print('EDIT OVERLAY: skipped', 'fast commit' if _fast else 'time guard')
 else:
+    _EDIT_PARAMS.update(max_seconds=min(_EDIT_PARAMS.get('max_seconds', 3600), _left - 300),
+                        rel_seconds=min(_EDIT_PARAMS.get('rel_seconds', 2400), _left - 900))
     try:
         _p = _P('/kaggle/working/p2s_code/edit_overlay.py'); _p.parent.mkdir(parents=True, exist_ok=True)
         _p.write_text(_EDIT_SRC)
         import importlib.util as _ilu
         _spec = _ilu.spec_from_file_location('edit_overlay', _p); _eo = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_eo)
         _sub = _P('/kaggle/working/submission.csv'); shutil.copy2(_sub, '/kaggle/working/submission_before_edit.csv')
-        _rep = _eo.apply(COMP / 'test.parquet', _sub, '/kaggle/working/submission_edit.csv', '/kaggle/working/edit_report.json')
+        _rep = _eo.apply(COMP / 'test.parquet', _sub, '/kaggle/working/submission_edit.csv', '/kaggle/working/edit_report.json',
+                         _EDIT_PARAMS)
         _f = pd.read_csv('/kaggle/working/submission_edit.csv', dtype=str, keep_default_na=False)
         assert _f.molecule_id.tolist() == SAMPLE_IDS and _f.smiles.str.split(';').map(len).between(1, 25).all()
         shutil.copy2('/kaggle/working/submission_edit.csv', _sub)
@@ -81,9 +85,9 @@ else:
 '''
 
 
-def add_edit(nb_path: Path) -> None:
+def add_edit(nb_path: Path, params: dict | None = None) -> None:
     nb = json.loads(nb_path.read_text())
-    text = EDIT_CELL.format(src=(ROOT / "casmi" / "edit_overlay.py").read_text())
+    text = EDIT_CELL.format(src=(ROOT / "casmi" / "edit_overlay.py").read_text(), params=dict(params or {}))
     nb["cells"].append({"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [],
                         "source": text.splitlines(keepends=True)})
     nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1))
@@ -94,5 +98,6 @@ if __name__ == "__main__":
     lam = float(args[2]) if len(args) > 2 else 4.0
     build(Path(args[0]), Path(args[1]), {"lam": lam})
     if "--edit" in sys.argv:
-        add_edit(Path(args[1]))
+        # --relatives also turns on the PubChem-relative products (panel: class-2 0.0000, class-3 +0.053)
+        add_edit(Path(args[1]), dict(relatives=1, max_seconds=3600, rel_seconds=2400) if "--relatives" in sys.argv else {})
     print("written", args[1])

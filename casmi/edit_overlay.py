@@ -27,8 +27,10 @@ PARAMS = dict(cos_min=0.5, min_matches=4, top_neighbour=3, beta=3.0, w_doc=0.4, 
               # PubChem-relative products (class 3): one edit away from the best relatives in PubChem windows M -/+ d
               # panel (experiments/pubchem_relatives_merge.py): rel_beta 0 + 0.2 * relative's doc -> class-2 lists 0.0000,
               # class-3 lists +0.053, net +0.013 at 25 % class 3 (halves +0.007 / +0.020)
-              relatives=0, rel_beta=0.0, rel_w_doc=0.2, rel_w_loss=0.0, rel_n_doc=500, rel_n_full=20, rel_k=3,
-              rel_seconds=1800)
+              # + 0.5 * log(number of distinct relative/edit routes to the product): class-3 +0.082, class-2 still
+              # 0.0000 (halves 0.043 / 0.125, experiments/pubchem_relatives_support.py)
+              relatives=0, rel_beta=0.0, rel_w_doc=0.2, rel_w_sup=0.5, rel_w_loss=0.0, rel_n_doc=500, rel_n_full=20,
+              rel_k=3, rel_seconds=1800)
 FORWARD = {
     "O-methyl": (14.01565, "[OX2H1:1]>>[O:1]C"),
     "N-methyl": (14.01565, "[NX3;H1,H2;!$(NC=O):1]>>[N:1]C"),
@@ -345,7 +347,7 @@ def relative_products(M: float, z: np.ndarray, mu: float, sd: float, tier: "Tier
     pass, full fingerprint score (z, standardised on a window sample) + 0.3 doc. Returns (gate score, smiles, key)."""
     z_e = z[chem.sel_e]
     jobs = [(e, d, -1, rx) for e, (d, rx) in chem.fwd.items()] + [(e, d, +1, rx) for e, (d, rx) in chem.strip.items()]
-    out, seen = [], set(have)
+    acc = {}                                  # product key -> smiles, z, best relative doc, routes, loss bonus
     for e, d, sign, rx in jobs:
         lo, hi = tier.window(M + sign * d, p["window_ppm"])
         if hi <= lo:
@@ -369,18 +371,20 @@ def relative_products(M: float, z: np.ndarray, mu: float, sd: float, tier: "Tier
         for _, r in cand[: p["rel_k"]]:
             rel_doc = float(tier.lsid[r]) + float(tier.lpmid[r])
             for k, smi in chem.products(tier.smiles(r), rx, cap=50).items():
-                if k in seen:
+                if k in have:
                     continue
-                pm = chem.mass(smi)
-                if not np.isfinite(pm) or abs(pm - M) > M * 15e-6:
+                if k not in acc:
+                    pm = chem.mass(smi)
+                    f = chem.fingerprint(smi) if np.isfinite(pm) and abs(pm - M) <= M * 15e-6 else None
+                    acc[k] = None if f is None else dict(smi=smi, zp=float((f @ z - mu) / sd), doc=rel_doc, routes=set(), loss=0.0)
+                a = acc[k]
+                if a is None:
                     continue
-                f = chem.fingerprint(smi)
-                if f is None:
-                    continue
-                seen.add(k)
-                bonus = p["rel_w_loss"] if (sign < 0 and e in losses) else 0.0
-                out.append(((f @ z - mu) / sd + p["rel_beta"] + p["rel_w_doc"] * rel_doc + bonus, smi, k))
-    return out
+                a["doc"] = max(a["doc"], rel_doc); a["routes"].add((r, e, sign))
+                if sign < 0 and e in losses:
+                    a["loss"] = p["rel_w_loss"]
+    return [(a["zp"] + p["rel_beta"] + p["rel_w_doc"] * a["doc"] + p["rel_w_sup"] * float(np.log(len(a["routes"]))) + a["loss"],
+             a["smi"], k) for k, a in acc.items() if a is not None]
 
 
 _RW = {}
