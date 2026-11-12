@@ -35,25 +35,32 @@ def lists_and_gate(c: pd.DataFrame, w_doc: float):
     return out
 
 
-def merge(lst, prods, beta, w_rel, max_rank=3, max_insert=3):
-    """lst: [(key, gate score)] in list order; prods: frame of one molecule's products."""
-    keys = [k for k, _ in lst]; score = [s for _, s in lst]
-    have = set(keys)
-    p = prods[~prods.key.isin(have)].copy()
+GENUINE_LOSS = {"hexose", "deoxyhexose", "pentose", "glucuronide", "acetyl", "malonyl"}
+
+
+def merge(lst, prods, beta, w_rel, max_rank=3, max_insert=3, w_loss=0.0, guard=np.inf, w_relz=0.0):
+    """Exactly the insertion rule of casmi/edit_overlay.py: the best `max_insert` products are each placed below the
+    lowest of the original top `max_rank` members that scores at least as high, if that slot is < max_rank."""
+    keys = [k for k, _ in lst]; top = [s for _, s in lst][:max_rank]
+    if top and top[0] >= guard:
+        return keys
+    p = prods[~prods.key.isin(set(keys))]
     if p.empty:
         return keys
-    p["g"] = p.z_p + beta + w_rel * p.rel_doc
-    p = p.sort_values("g", ascending=False).drop_duplicates("key")
-    n = 0
-    for k, gp in zip(p.key, p.g):
-        if n >= max_insert:
-            break
-        top = score[:max_rank]
-        beat = [i for i, s in enumerate(top) if s > gp]
-        slot = (max(beat) + 1) if beat else 0
-        if slot < max_rank:
-            keys.insert(slot, k); score.insert(slot, gp); n += 1
-    return keys[:25]
+    g = p.z_p + beta + w_rel * p.rel_doc + w_relz * p.rel_z + w_loss * p.loss_ok
+    p = p.assign(g=g).sort_values("g", ascending=False).drop_duplicates("key")
+    slots = {}
+    for k, gp in zip(p.key[:max_insert], p.g[:max_insert]):
+        beaten = [i for i, si in enumerate(top) if si >= gp]
+        r = (max(beaten) + 1) if beaten else 0
+        if r < max_rank:
+            slots.setdefault(r, []).append(k)
+    if not slots:
+        return keys
+    out = []
+    for i, k in enumerate(keys):
+        out.extend(slots.get(i, [])); out.append(k)
+    return out[:25]
 
 
 def rr(keys, truth):
@@ -63,6 +70,12 @@ def rr(keys, truth):
 if __name__ == "__main__":
     c = load_candidates()
     prods = pd.read_parquet(ROOT / "artifacts" / "relatives_products.parquet")
+    loss = pd.read_parquet(ROOT / "artifacts" / "panel_loss_edits.parquet")
+    lk = set(zip(loss.molecule, loss.edit))
+    prods["loss_ok"] = [float(d == -1 and e in GENUINE_LOSS and (m, e) in lk) for m, e, d in zip(prods.molecule, prods.edit, prods.direction)]
+    hit_all = prods[prods.key == prods.molecule]
+    print("answer-generating products with loss evidence:", round(float(hit_all.loss_ok.mean()), 2) if len(hit_all) else None,
+          "| all products:", round(float(prods.loss_ok.mean()), 3))
     print(f"products {len(prods)} for {prods.molecule.nunique()} molecules; answer generated for "
           f"{prods[prods.key == prods.molecule].molecule.nunique()} molecules")
     hit = prods[prods.key == prods.molecule]
@@ -74,15 +87,31 @@ if __name__ == "__main__":
               "| top3", (rk <= 3).mean().round(2))
     by_m = {m: g for m, g in prods.groupby("molecule")}
     empty = prods.iloc[:0]
-    for w_doc in (0.3, 0.4):
-        L = lists_and_gate(c, w_doc)
-        mols = sorted(L)
-        for beta in (0.0, 1.0, 2.0, 3.0):
-            for w_rel in (0.0, 0.2):
-                r2 = [rr(merge(L[m][0], by_m.get(m, empty), beta, w_rel), m) for m in mols]
-                r3 = [rr(merge(L[m][1], by_m.get(m, empty), beta, w_rel), m) for m in mols]
-                b2 = [rr([k for k, _ in L[m][0]], m) for m in mols]
-                n = 250
-                mix = 0.75 * (np.sum(r2) - np.sum(b2)) / n + 0.25 * np.sum(r3) / n
-                print(f"w_doc {w_doc} beta {beta} w_rel {w_rel}: class-2 {np.sum(b2)/n:.4f} -> {np.sum(r2)/n:.4f} | "
-                      f"class-3 0 -> {np.sum(r3)/n:.4f} | net at 25 % class 3 {mix:+.4f}")
+    L = lists_and_gate(c, 0.4)
+    mols = sorted(L)
+    b2 = [rr([k for k, _ in L[m][0]], m) for m in mols]
+    n = 250
+    grid = [dict(beta=b, w_rel=wr, w_loss=wl, guard=g, w_relz=wz)
+            for b in (0.0, 1.0, 2.0, 3.0) for wr in (0.0, 0.2) for wl in (0.0, 1.5, 3.0) for g in (np.inf, 6.0) for wz in (0.0, 0.5)]
+    res = []
+    for kw in grid:
+        r2 = [rr(merge(L[m][0], by_m.get(m, empty), **kw), m) for m in mols]
+        r3 = [rr(merge(L[m][1], by_m.get(m, empty), **kw), m) for m in mols]
+        d2, c3 = (np.sum(r2) - np.sum(b2)) / n, np.sum(r3) / n
+        res.append(dict(**kw, class2=round(d2, 4), class3=round(c3, 4), net25=round(0.75 * d2 + 0.25 * c3, 4),
+                        net10=round(0.9 * d2 + 0.1 * c3, 4)))
+    res = pd.DataFrame(res).sort_values("net25", ascending=False)
+    halves = [mols[0::2], mols[1::2]]
+    def half_net(kw, ms):
+        b = [rr([k for k, _ in L[m][0]], m) for m in ms]
+        r2 = [rr(merge(L[m][0], by_m.get(m, empty), **kw), m) for m in ms]
+        r3 = [rr(merge(L[m][1], by_m.get(m, empty), **kw), m) for m in ms]
+        return round(0.75 * (np.sum(r2) - np.sum(b)) / len(ms) + 0.25 * np.sum(r3) / len(ms), 4)
+    cols = ["beta", "w_rel", "w_loss", "guard", "w_relz"]
+    res["half_a"] = [half_net(dict(zip(cols, r)), halves[0]) for r in res[cols].itertuples(index=False)]
+    res["half_b"] = [half_net(dict(zip(cols, r)), halves[1]) for r in res[cols].itertuples(index=False)]
+    print(f"class-2 base {np.sum(b2) / n:.4f}")
+    print(res.head(20).to_string(index=False))
+    print("...default-like rows:"); print(res[(res.w_rel == 0) & (res.w_loss == 0) & (res.w_relz == 0) & np.isinf(res.guard)].to_string(index=False))
+    if len(hit_all):
+        print("answer-generating edits:", hit_all.drop_duplicates("molecule").groupby(["edit", "direction"]).size().to_dict())

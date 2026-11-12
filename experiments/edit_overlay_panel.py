@@ -44,9 +44,11 @@ if __name__ == "__main__":
     else:
         zl = np.load(EXT / "panel" / "panel_logits.npz")
         cached = {str(k): zl["fold0"][i].astype(np.float64) for i, k in enumerate(zl["keys"])}
-    extra = {k.split("=")[0][2:]: float(k.split("=")[1]) for k in sys.argv[1:] if k.startswith(("--min_slot=", "--guard="))}
-    if "min_slot" in extra:
-        extra["min_slot"] = int(extra["min_slot"])
+    extra = {}
+    for a in sys.argv[1:]:                       # any overlay parameter: --name=value, cast to the default's type
+        k, _, v = a[2:].partition("=")
+        if a.startswith("--") and v and k in edit_overlay.PARAMS:
+            extra[k] = type(edit_overlay.PARAMS[k])(float(v)) if isinstance(edit_overlay.PARAMS[k], (int, float)) else v
     kw = dict(p={"device": "cpu", **extra}, v4={"chem": v4chem}, logits_fn=cached.get,
               fold_model=EXT / "foldsafe" / "fpnet_fold0.pt", tier_root=EXT / "pubchem_prior" / "casmi26-pubchem-tier",
               fp_bits=EXT / "foldsafe" / "fp_bits.npy")

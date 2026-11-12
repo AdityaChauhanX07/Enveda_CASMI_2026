@@ -22,7 +22,9 @@ import pandas as pd
 PARAMS = dict(cos_min=0.5, min_matches=4, top_neighbour=3, beta=3.0, w_doc=0.4, max_rank=3, max_insert=3, ensemble=1,
               min_slot=0, guard=float("inf"),
               window_ppm=10.0, window_sample=200, mass_tol=0.003, max_seconds=1200, device="cuda", tol=0.01,
-              top_n=60, min_rel=0.01, seed=0)
+              top_n=60, min_rel=0.01, seed=0,
+              # PubChem-relative products (class 3): one edit away from the best relatives in PubChem windows M -/+ d
+              relatives=0, rel_beta=2.0, rel_w_loss=0.0, rel_n_doc=500, rel_n_full=20, rel_k=3, rel_seconds=1800)
 FORWARD = {
     "O-methyl": (14.01565, "[OX2H1:1]>>[O:1]C"),
     "N-methyl": (14.01565, "[NX3;H1,H2;!$(NC=O):1]>>[N:1]C"),
@@ -45,6 +47,23 @@ REVERSE = {
     "deoxyhexose": (146.05791, "[O:1]C1OC(C)C(O)C(O)C1O>>[O:1]"),
     "acetyl": (42.01057, "[O:1]C(C)=O>>[O:1]"),
 }
+# heavier relative -> product: the modification of each forward edit taken off again
+STRIP = {
+    "O-methyl": "[CH3][OX2:1][#6:2]>>[O:1][#6:2]",
+    "N-methyl": "[CH3][NX3;!$(NC=O):1]>>[N:1]",
+    "C-methyl(ar)": "[CH3][c:1]>>[c:1]",
+    "OH(ar)": "[OX2H1][c:1]>>[c:1]",
+    "OH(aliph)": "[OX2H1][CX4:1]>>[C:1]",
+    "hexose": "[O:1]C1OC(CO)C(O)C(O)C1O>>[O:1]",
+    "deoxyhexose": "[O:1]C1OC(C)C(O)C(O)C1O>>[O:1]",
+    "pentose": "[O:1]C1OCC(O)C(O)C1O>>[O:1]",
+    "glucuronide": "[O:1]C1OC(C(=O)O)C(O)C(O)C1O>>[O:1]",
+    "acetyl": "[O:1]C(C)=O>>[O:1]",
+    "H2": "[CX4;!H0:1][CX4;!H0:2]>>[C:1]=[C:2]",
+    "prenyl(ar)": "[c:1][CH2][CH]=C([CH3])[CH3]>>[c:1]",
+    "malonyl": "[O:1]C(=O)CC(=O)O>>[O:1]",
+}
+GENUINE_LOSS = {"hexose", "deoxyhexose", "pentose", "glucuronide", "acetyl", "malonyl"}   # lost as neutrals in MS2
 INPUT = Path("/kaggle/input")
 
 
@@ -139,6 +158,8 @@ class Chemistry:
         self.bits = fp_bits
         self.fwd = {k: (d, AllChem.ReactionFromSmarts(s)) for k, (d, s) in FORWARD.items()}
         self.rev = {k: (d, AllChem.ReactionFromSmarts(s)) for k, (d, s) in REVERSE.items()}
+        self.strip = {k: (FORWARD[k][0], AllChem.ReactionFromSmarts(s)) for k, s in STRIP.items()}
+        self.sel_e = np.flatnonzero(fp_bits < 4096); self.raw_e = fp_bits[self.sel_e]      # ECFP4 block of the bits
         self._key = {}
 
     def key(self, smiles: str) -> str:
@@ -162,6 +183,13 @@ class Chemistry:
         parts = [gen.GetFingerprintAsNumPy(m).astype(np.float32) for gen in self.gens]
         parts.append(np.array(list(self.MACCS.GenMACCSKeys(m)), dtype=np.float32))
         return np.concatenate(parts)[self.bits]
+
+    def partial(self, smiles: str, z_e: np.ndarray) -> float:
+        """Cheap first-pass score on the ECFP4 block only (as the fork's PubChem channel does)."""
+        m = self.Chem.MolFromSmiles(smiles)
+        if m is None:
+            return -np.inf
+        return float(self.gens[0].GetFingerprintAsNumPy(m)[self.raw_e].astype(np.float64) @ z_e)
 
     def mass(self, smiles: str) -> float:
         m = self.Chem.MolFromSmiles(smiles)
@@ -290,6 +318,65 @@ def propose(lists: dict, nbr: dict, target: dict, chem: Chemistry, p: dict, t0: 
     return out
 
 
+def loss_edits(spectra: list[dict], tol: float = 0.01, min_rel: float = 0.01) -> set:
+    """Edits whose added group shows up as a neutral loss (a peak at precursor - d) in any spectrum."""
+    out = set()
+    for s in spectra:
+        mz, it = np.asarray(s["mz"], float), np.asarray(s["it"], float)
+        if not len(mz) or it.max() <= 0:
+            continue
+        it = it / it.max()
+        for e in GENUINE_LOSS:
+            hit = np.abs(mz - (float(s["prec"]) - FORWARD[e][0])) <= tol
+            if hit.any() and it[hit].max() >= min_rel:
+                out.add(e)
+    return out
+
+
+def relative_products(M: float, z: np.ndarray, mu: float, sd: float, tier: "Tier", chem: Chemistry, p: dict,
+                      rng, have: set, losses: set) -> list[tuple]:
+    """Products one edit away from the best relatives of the query in PubChem: lighter relatives (mass M - d) get the
+    forward edit, heavier ones (M + d) the strip edit. Relatives: best-documented rows of each window, ECFP4 first
+    pass, full fingerprint score (z, standardised on a window sample) + 0.3 doc. Returns (gate score, smiles, key)."""
+    z_e = z[chem.sel_e]
+    jobs = [(e, d, -1, rx) for e, (d, rx) in chem.fwd.items()] + [(e, d, +1, rx) for e, (d, rx) in chem.strip.items()]
+    out, seen = [], set(have)
+    for e, d, sign, rx in jobs:
+        lo, hi = tier.window(M + sign * d, p["window_ppm"])
+        if hi <= lo:
+            continue
+        rows = np.arange(lo, hi)
+        doc = np.asarray(tier.lsid[lo:hi], np.float64) + np.asarray(tier.lpmid[lo:hi], np.float64)
+        sample = rows if len(rows) <= 30 else rng.choice(rows, 30, replace=False)
+        ref = [chem.fingerprint(tier.smiles(int(r))) for r in sample]
+        ref = np.array([f @ z for f in ref if f is not None])
+        if len(ref) < 5:
+            continue
+        mu_e, sd_e = ref.mean(), ref.std() + 1e-9
+        keep = np.argsort(-doc, kind="stable")[: p["rel_n_doc"]]
+        part = np.array([chem.partial(tier.smiles(int(rows[j])), z_e) for j in keep])
+        cand = []
+        for j in keep[np.argsort(-part, kind="stable")[: p["rel_n_full"]]]:
+            f = chem.fingerprint(tier.smiles(int(rows[j])))
+            if f is not None:
+                cand.append(((f @ z - mu_e) / sd_e + 0.3 * doc[j], int(rows[j])))
+        cand.sort(key=lambda x: -x[0])
+        for _, r in cand[: p["rel_k"]]:
+            for k, smi in chem.products(tier.smiles(r), rx, cap=50).items():
+                if k in seen:
+                    continue
+                pm = chem.mass(smi)
+                if not np.isfinite(pm) or abs(pm - M) > M * 15e-6:
+                    continue
+                f = chem.fingerprint(smi)
+                if f is None:
+                    continue
+                seen.add(k)
+                bonus = p["rel_w_loss"] if (sign < 0 and e in losses) else 0.0
+                out.append(((f @ z - mu) / sd + p["rel_beta"] + bonus, smi, k))
+    return out
+
+
 def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v4_code=None, fold_model=None,
           tier_root=None, fp_bits=None, logits_fn=None, v4=None) -> dict:
     """logits_fn(molecule_id) and v4 replace the model run and the engine code (offline checks only)."""
@@ -323,9 +410,14 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
         z0 = query_logits(bank, v4, spectra[first])
         report["model_check"] = dict(molecule=first, models=len(paths), bits=int(len(z0)), mean_logit=round(float(z0.mean()), 3),
                                      finite=bool(np.isfinite(z0).all()))
-    if prods:
+    todo = list(prods)
+    if p["relatives"]:
+        todo += [b for b in lists if b not in prods and b in spectra and b in target]
+        report["relative_products"] = 0; report["relative_molecules"] = 0
+    if todo:
         rng = np.random.default_rng(p["seed"])
-        for b, P in prods.items():
+        for b in todo:
+            P = prods.get(b, {})
             if time.time() - t0 > p["max_seconds"]:
                 report["stopped_early"] = True
                 break
@@ -352,6 +444,11 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
                 f = chem.fingerprint(s)
                 if f is not None:
                     scored.append(((f @ z - mu) / sd + p["beta"], s))
+            if p["relatives"] and time.time() - t0 < p["rel_seconds"]:
+                have = {chem.key(s) for s in cand} | set(P)
+                rp = relative_products(target[b], z, mu, sd, tier, chem, p, rng, have, loss_edits(spectra[b]))
+                report["relative_products"] += len(rp); report["relative_molecules"] += 1
+                scored += [(g, smi) for g, smi, _ in rp]
             scored.sort(key=lambda x: -x[0])
             if top and top[0] >= p["guard"]:
                 continue
