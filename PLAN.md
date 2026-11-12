@@ -42,6 +42,8 @@ Notebook cell after the networking overlay, CPU except step 1, fallback to the p
 5. Insert a product at rank r <= 3 where it beats the list members on z + 0.4 doc with bonus 3; keep 25 entries.
    Also reverse edits (B lighter than A: remove O-methyl, OH, hexose, deoxyhexose, acetyl). Panel, beta 3, top-3:
    net +0.011 at 25 % class 3, break-even ~7 % (forward only +0.007).
+   Module `casmi/edit_overlay.py` end to end, mixed 25 % class-3 simulation: +0.002 / +0.005 (class-2 lists
+   -0.0045). Ship only after a class-2 guard (library-hit / leader-confidence gate) shows a better trade-off.
 
 ## 1. Verified facts
 
