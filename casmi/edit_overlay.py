@@ -27,9 +27,11 @@ PARAMS = dict(cos_min=0.5, min_matches=4, top_neighbour=3, beta=3.0, w_doc=0.4, 
               # PubChem-relative products (class 3): one edit away from the best relatives in PubChem windows M -/+ d
               # panel (experiments/pubchem_relatives_merge.py): rel_beta 0 + 0.2 * relative's doc -> class-2 lists 0.0000,
               # class-3 lists +0.053, net +0.013 at 25 % class 3 (halves +0.007 / +0.020)
-              # + 0.5 * log(number of distinct relative/edit routes to the product): class-3 +0.082, class-2 still
-              # 0.0000 (halves 0.043 / 0.125, experiments/pubchem_relatives_support.py)
-              relatives=0, rel_beta=0.0, rel_w_doc=0.2, rel_w_sup=0.5, rel_w_loss=0.0, rel_n_doc=300, rel_n_full=20,
+              # + 0.5 * log(number of distinct relative/edit routes to the product). Selection grid on the panel
+              # (experiments/relatives_cache.py eval/eval2): pre-filter 150 best-documented rows per window, 40 fully
+              # scored, top 3, relative doc weight 0.15 -> answers rebuilt 138/250, class-2 -0.0002 (1 hurt),
+              # class-3 +0.194 (halves 0.162 / 0.226)
+              relatives=0, rel_beta=0.0, rel_w_doc=0.15, rel_w_sup=0.5, rel_w_loss=0.0, rel_n_doc=150, rel_n_full=40,
               rel_k=3, rel_seconds=1800,
               # neighbour products: "doc" = z + nb_beta + nb_w_doc * source doc + nb_w_sup * log(routes); panel, 2 draws at
               # 25 % class 3: +0.018 / +0.009 (class-2 -0.001) vs "beta" (z + 3): +0.009 / +0.002 (class-2 -0.003/-0.004)
