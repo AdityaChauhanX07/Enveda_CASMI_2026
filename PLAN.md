@@ -19,6 +19,10 @@ Last updated: 2026-11-11. Final deadline 2026-12-14 23:59 UTC (entry/merge 2026-
   `tools/add_overlay.py`), 6 s on the 400-molecule visible test.
 - Neighbour edits (`experiments/neighbour_edit_oracle.py`): one modification of a partner's true structure
   reproduces 47/250 panel molecules exactly, ~3 products per edit. Basis for the class-3 generator.
+- Realistic version (`experiments/neighbour_edit_panel.py`): edits of the neighbour's top-3 candidates regenerate the
+  removed answer for 29-30/250 molecules, but inserting the products without a gate costs more on class-2 lists than
+  it gains (`experiments/neighbour_edit_insert.py`). Next: score products with the fold-safe FPNet and insert only
+  when a product beats the list's own candidates.
 
 ## 1. Verified facts
 
