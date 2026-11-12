@@ -27,10 +27,12 @@ in the private 69 % (speculation, thread 755039), so class-3 gains matter more t
   (class-2 -0.001), twice the gain of the first version (z + 3).
 - PubChem-relative generator (new): 99 % of panel answers have a one-edit relative in PubChem. Per edit window
   (13 edits each way) the 150 best-documented rows, ECFP4 pass, 40 fully scored, top 3 relatives; products scored
-  z + 0.15 x relative doc + 0.5 x log(routes): 138/250 answers rebuilt, class-2 lists -0.0002, class-3 lists +0.194
-  (cache grid, `experiments/relatives_cache.py`). Undocumented class-2 answers: net +0.048 (rebuilt from documented
-  relatives). In `casmi/edit_overlay.py` (`relatives=1`), pooled over 4 processes with an in-process fallback and a
-  deadline, weakest lists first, 40 min budget.
+  z + 0.15 x relative doc + 0.5 x log(routes): 138-141/250 answers rebuilt, class-2 lists -0.0002, class-3 lists
+  +0.19 (cache grid, `experiments/relatives_cache.py`). Undocumented class-2 answers: net +0.048 (rebuilt from
+  documented relatives). In `casmi/edit_overlay.py` (`relatives=1`), pooled over 4 processes with an in-process
+  fallback and a deadline, weakest lists first, 40 min budget (~150-200 of 400 molecules on Kaggle's vCPUs).
+- **Both generators end to end** (`edit_overlay_panel.py --relatives=1`): **+0.039 / +0.042 at 25 % class 3**
+  (class-3 lists 0.175 / 0.186, class-2 lists -0.005); break-even class-3 share ~3 %.
 
 **Notebooks.** a4 = Fork A + networking + neighbour edits: smoke run passed. a5 = Fork A + networking + both
 generators (final settings) and b5 = Fork B + the same: built; relative search checked on Kaggle CPU (code path,
