@@ -24,7 +24,7 @@ from network_panel import shortlist  # noqa: E402
 if __name__ == "__main__":
     art = ROOT / "artifacts"; art.mkdir(exist_ok=True)
     t = pq.read_table(DATA / "train.parquet", filters=[("ingest_lib", "=", "enveda-np-examples")]).to_pandas()
-    t["molecule_id"] = t.inchikey14
+    t["molecule_id"] = [ik14(x) for x in t.normalized_smiles]      # the panel's molecule id is the metric key
     t.to_parquet(art / "np_test.parquet")
     truth = t.drop_duplicates("molecule_id").set_index("molecule_id").normalized_smiles
     c = load_candidates()
@@ -37,8 +37,13 @@ if __name__ == "__main__":
     import numpy as np
     spec = importlib.util.spec_from_file_location("_v4chem", EXT / "v4g" / "casmi26-v4b-models" / "code" / "casmi" / "chem.py")
     v4chem = importlib.util.module_from_spec(spec); spec.loader.exec_module(v4chem)
-    zl = np.load(EXT / "panel" / "panel_logits.npz")
-    cached = {k: zl["fold0"][i].astype(np.float64) for i, k in enumerate(zl["keys"])}
+    if "--ensemble" in sys.argv:          # mean logits of the five fold-safe models (Kaggle job casmi26-fs-panel-logits)
+        zl = np.load(ROOT / "artifacts" / "panel_logits_foldsafe.npz")
+        ens = np.mean([0.5 * (zl[f"single{k}"].astype(np.float64) + zl[f"merged{k}"].astype(np.float64)) for k in range(5)], axis=0)
+        cached = {str(k): ens[i] for i, k in enumerate(zl["keys"])}
+    else:
+        zl = np.load(EXT / "panel" / "panel_logits.npz")
+        cached = {str(k): zl["fold0"][i].astype(np.float64) for i, k in enumerate(zl["keys"])}
     extra = {k.split("=")[0][2:]: float(k.split("=")[1]) for k in sys.argv[1:] if k.startswith(("--min_slot=", "--guard="))}
     if "min_slot" in extra:
         extra["min_slot"] = int(extra["min_slot"])

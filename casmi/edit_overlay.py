@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-PARAMS = dict(cos_min=0.5, min_matches=4, top_neighbour=3, beta=3.0, w_doc=0.4, max_rank=3, max_insert=3,
+PARAMS = dict(cos_min=0.5, min_matches=4, top_neighbour=3, beta=3.0, w_doc=0.4, max_rank=3, max_insert=3, ensemble=1,
               min_slot=0, guard=float("inf"),
               window_ppm=10.0, window_sample=200, mass_tol=0.003, max_seconds=1200, device="cuda", tol=0.01,
               top_n=60, min_rel=0.01, seed=0)
@@ -316,10 +316,12 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
     new = {}
     bank = None
     if not logits_fn and spectra:
-        bank = v4["fpnet"].ModelBank([str(fold_model)], device=p["device"])
+        # ensemble=1: all five fold-safe models (logits averaged inside ModelBank); panel 0.243 alone vs 0.208 for fold 0
+        paths = sorted(str(x) for x in fold_model.parent.glob("fpnet_fold*.pt")) if p.get("ensemble", 1) else [str(fold_model)]
+        bank = v4["fpnet"].ModelBank(paths, device=p["device"])
         first = next(iter(spectra))
         z0 = query_logits(bank, v4, spectra[first])
-        report["model_check"] = dict(molecule=first, bits=int(len(z0)), mean_logit=round(float(z0.mean()), 3),
+        report["model_check"] = dict(molecule=first, models=len(paths), bits=int(len(z0)), mean_logit=round(float(z0.mean()), 3),
                                      finite=bool(np.isfinite(z0).all()))
     if prods:
         rng = np.random.default_rng(p["seed"])
