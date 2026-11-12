@@ -370,20 +370,18 @@ def relative_products(M: float, z: np.ndarray, mu: float, sd: float, tier: "Tier
         offs = np.asarray(tier.off[lo:hi + 1], np.int64)                 # one contiguous read per window
         blob = bytes(tier.smi[offs[0]:offs[-1]])
         smi_at = lambda j: blob[offs[j] - offs[0]:offs[j + 1] - offs[0]].decode()
-        sample = np.arange(hi - lo) if hi - lo <= 30 else rng.choice(hi - lo, 30, replace=False)
-        ref = [chem.fingerprint(smi_at(int(j))) for j in sample]
-        ref = np.array([f @ z for f in ref if f is not None])
-        if len(ref) < 5:
-            continue
-        mu_e, sd_e = ref.mean(), ref.std() + 1e-9
         keep = np.argsort(-doc, kind="stable")[: p["rel_n_doc"]]
         part = np.array([chem.partial(smi_at(int(j)), z_e) for j in keep])
-        cand = []
+        raw, idx = [], []
         for j in keep[np.argsort(-part, kind="stable")[: p["rel_n_full"]]]:
             f = chem.fingerprint(smi_at(int(j)))
             if f is not None:
-                cand.append(((f @ z - mu_e) / sd_e + 0.3 * doc[j], int(j)))
-        cand.sort(key=lambda x: -x[0])
+                raw.append(float(f @ z)); idx.append(int(j))
+        if len(raw) < 3:
+            continue
+        raw = np.asarray(raw)          # standardised over the fully scored candidates (panel: same answers as a window
+        zr = (raw - raw.mean()) / (raw.std() + 1e-9)          # sample, 40 % fewer fingerprints)
+        cand = sorted(((float(zr[i]) + 0.3 * doc[j], j) for i, j in enumerate(idx)), key=lambda x: -x[0])
         for _, j in cand[: p["rel_k"]]:
             r, rel_doc = lo + j, float(doc[j])
             for k, smi in chem.products(smi_at(j), rx, cap=50).items():

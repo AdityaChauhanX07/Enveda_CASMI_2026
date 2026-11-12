@@ -166,7 +166,17 @@ def evaluate(variants: list[dict]) -> None:
                 part = w["part"][:nd]
                 top = np.argsort(-part, kind="stable")[: v["n_full"]]
                 top = [i for i in top if np.isfinite(w["full"][i])]
-                top.sort(key=lambda i: -(w["full"][i] + v["w_sel"] * w["doc"][i]))
+                sel = v.get("sel", "full")
+                if sel == "part":                  # ECFP4 partial only, standardised over the pre-filtered rows
+                    ps = (part - part.mean()) / (part.std() + 1e-9)
+                    top = list(np.argsort(-(ps + v["w_sel"] * w["doc"][:nd]), kind="stable")[: v["n_full"]])
+                    top.sort(key=lambda i: -(ps[i] + v["w_sel"] * w["doc"][i]))
+                elif sel == "full_local" and top:   # full score standardised over the n_full candidates (no window sample)
+                    fv = np.array([w["full"][i] for i in top]); fz = (fv - fv.mean()) / (fv.std() + 1e-9)
+                    loc = dict(zip(top, fz))
+                    top.sort(key=lambda i: -(loc[i] + v["w_sel"] * w["doc"][i]))
+                else:
+                    top.sort(key=lambda i: -(w["full"][i] + v["w_sel"] * w["doc"][i]))
                 for i in top[: v["k"]]:
                     for key, zp in products(m, e, sign, int(w["rows"][i]), w["smiles"][i]):
                         a = acc.setdefault(key, dict(zp=zp, doc=0.0, routes=set()))
@@ -206,3 +216,8 @@ if __name__ == "__main__" and sys.argv[1] == "family":
 if __name__ == "__main__" and sys.argv[1] == "family0":
     base = dict(n_doc=150, n_full=40, w_sel=0.3, k=3, w_rel=0.15, w_sup=0.5, mode="gate")
     evaluate([dict(base, rerank=5, lam=0.0), dict(base, rerank=5, lam=0.25), dict(base, rerank=5, lam=0.1)])
+
+
+if __name__ == "__main__" and sys.argv[1] == "sel":
+    base = dict(n_doc=150, n_full=40, w_sel=0.3, k=3, w_rel=0.15, w_sup=0.5)
+    evaluate([base, dict(base, sel="full_local"), dict(base, sel="part"), dict(base, sel="part", w_sel=0.1), dict(base, sel="part", k=4)])
