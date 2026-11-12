@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 
 PARAMS = dict(cos_min=0.5, min_matches=4, top_neighbour=3, beta=3.0, w_doc=0.4, max_rank=3, max_insert=3,
+              min_slot=0, guard=float("inf"),
               window_ppm=10.0, window_sample=200, mass_tol=0.003, max_seconds=1200, device="cuda", tol=0.01,
               top_n=60, min_rel=0.01, seed=0)
 FORWARD = {
@@ -338,10 +339,12 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
                 if f is not None:
                     scored.append(((f @ z - mu) / sd + p["beta"], s))
             scored.sort(key=lambda x: -x[0])
+            if top and top[0] >= p["guard"]:
+                continue
             slots = {}
             for sp_, s in scored[: p["max_insert"]]:
                 beaten_by = [i for i, si in enumerate(top) if si >= sp_]
-                r = (max(beaten_by) + 1) if beaten_by else 0
+                r = max((max(beaten_by) + 1) if beaten_by else 0, p["min_slot"])
                 if r < p["max_rank"]:
                     slots.setdefault(r, []).append(s)
             if not slots:

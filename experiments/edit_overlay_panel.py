@@ -39,7 +39,10 @@ if __name__ == "__main__":
     v4chem = importlib.util.module_from_spec(spec); spec.loader.exec_module(v4chem)
     zl = np.load(EXT / "panel" / "panel_logits.npz")
     cached = {k: zl["fold0"][i].astype(np.float64) for i, k in enumerate(zl["keys"])}
-    kw = dict(p={"device": "cpu"}, v4={"chem": v4chem}, logits_fn=cached.get,
+    extra = {k.split("=")[0][2:]: float(k.split("=")[1]) for k in sys.argv[1:] if k.startswith(("--min_slot=", "--guard="))}
+    if "min_slot" in extra:
+        extra["min_slot"] = int(extra["min_slot"])
+    kw = dict(p={"device": "cpu", **extra}, v4={"chem": v4chem}, logits_fn=cached.get,
               fold_model=EXT / "foldsafe" / "fpnet_fold0.pt", tier_root=EXT / "pubchem_prior" / "casmi26-pubchem-tier",
               fp_bits=EXT / "foldsafe" / "fp_bits.npy")
     mixed = [a for a in sys.argv[1:] if a.startswith("--mixed=")]
