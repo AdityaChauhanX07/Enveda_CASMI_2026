@@ -23,15 +23,18 @@ in the private 69 % (speculation, thread 755039), so class-3 gains matter more t
   Shipping them inside the fork's PubChem channel is pointless (A+B logits are ~11x larger); used in our overlay.
 - Second-opinion re-ranking of fork-like lists: <= +0.003. Spectrum weighting / pooling variants: no gain.
 - Networking overlay: +0.006-0.011 on the panel, LB-neutral (0.486 vs 0.486). Kept.
-- Neighbour-edit generator with the ensemble gate: +0.005 at 25 % class 3 (class-2 cost -0.003 to -0.004).
-- PubChem-relative generator (new): 99 % of panel answers have a one-edit relative in PubChem. Products of the
-  top-3 relatives per edit window (13 edits each way), scored z + 0.2 x relative documentation + 0.5 x log(routes):
-  class-2 lists 0.0000 (no molecule hurt, also for the least documented 20 %), class-3 lists +0.082, net +0.021
-  at 25 % class 3. In `casmi/edit_overlay.py` (`relatives=1`), pooled over 4 processes, weakest lists first,
-  40 min budget.
+- Neighbour-edit generator, products scored z + 0.2 x source doc + 0.5 x log(routes): +0.018 / +0.009 at 25 % class 3
+  (class-2 -0.001), twice the gain of the first version (z + 3).
+- PubChem-relative generator (new): 99 % of panel answers have a one-edit relative in PubChem. Per edit window
+  (13 edits each way) the 150 best-documented rows, ECFP4 pass, 40 fully scored, top 3 relatives; products scored
+  z + 0.15 x relative doc + 0.5 x log(routes): 138/250 answers rebuilt, class-2 lists -0.0002, class-3 lists +0.194
+  (cache grid, `experiments/relatives_cache.py`). Undocumented class-2 answers: net +0.048 (rebuilt from documented
+  relatives). In `casmi/edit_overlay.py` (`relatives=1`), pooled over 4 processes with an in-process fallback and a
+  deadline, weakest lists first, 40 min budget.
 
-**Notebooks.** a4 = Fork A + networking + neighbour edits (ensemble): smoke run passed. a5 = a4 + PubChem relatives:
-built, waiting for the end-to-end panel check and the Kaggle CPU runtime check, then a GPU smoke run.
+**Notebooks.** a4 = Fork A + networking + neighbour edits: smoke run passed. a5 = Fork A + networking + both
+generators (final settings) and b5 = Fork B + the same: built; relative search checked on Kaggle CPU (code path,
+runtime). GPU quota is spent until Saturday 00:00 UTC; a scheduled check-in at 00:10 UTC smoke-tests and submits both.
 
 **Next.** (1) Saturday after the quota reset: submit a5. (2) Generator recall/ranking (more relatives, NP acyl and
 sulfate edits, 2-step edits), validated on the panel. (3) Look for a class-2 lever beyond the shared stack.
