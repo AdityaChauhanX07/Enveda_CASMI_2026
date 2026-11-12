@@ -124,6 +124,38 @@ def evaluate(variants: list[dict]) -> None:
             prod_memo[k] = out
         return prod_memo[k]
 
+    def family(m, v):
+        acc = {}
+        for (e, sign), w in cache.get(m, {}).items():
+            nd = min(v["n_doc"], len(w["rows"]))
+            top = np.argsort(-w["part"][:nd], kind="stable")[: v["n_full"]]
+            top = [i for i in top if np.isfinite(w["full"][i])]
+            top.sort(key=lambda i: -(w["full"][i] + v["w_sel"] * w["doc"][i]))
+            for i in top[: v["k"]]:
+                for key, zp in products(m, e, sign, int(w["rows"][i]), w["smiles"][i]):
+                    a = acc.setdefault(key, dict(zp=zp, doc=0.0, routes=set()))
+                    a["doc"] = max(a["doc"], float(w["doc"][i])); a["routes"].add((int(w["rows"][i]), e, sign))
+        return acc
+
+    if variants and variants[0].get("rerank"):
+        for v in variants:
+            r2 = []
+            for m in mols:
+                acc = family(m, v)
+                lst = lists[m][0]
+                keys = [k for k, _ in lst]; g = [x for _, x in lst]
+                kk = v["rerank"]
+                bonus = [(v["w_rel"] * acc[k]["doc"] + v["w_sup"] * np.log(len(acc[k]["routes"]))) if k in acc else 0.0 for k in keys[:kk]]
+                if v["mode"] == "gate":
+                    sc = [g[i] + v["lam"] * bonus[i] for i in range(len(bonus))]
+                else:
+                    sc = [-np.log1p(i) + v["lam"] * bonus[i] for i in range(len(bonus))]
+                order = sorted(range(len(sc)), key=lambda i: -sc[i])
+                r2.append(rr([keys[i] for i in order] + keys[kk:], m))
+            d = np.array(r2) - np.array(base2)
+            print(f"{v}: class-2 {np.mean(r2):.4f} vs {np.mean(base2):.4f} ({np.mean(d):+.4f}; up {(d > 0).sum()}, down {(d < 0).sum()})", flush=True)
+        return
+
     for v in variants:
         t0 = time.time()
         r2, r3, gen = [], [], 0
@@ -163,3 +195,14 @@ if __name__ == "__main__" and sys.argv[1] == "eval2":
         for w_rel, beta in ((0.2, 0.0), (0.15, 0.0), (0.1, 0.0), (0.2, -0.5), (0.2, -1.0), (0.15, -0.5)):
             grid.append(dict(n_doc=nd, n_full=nf, w_sel=0.3, k=3, w_rel=w_rel, w_sup=0.5, beta=beta))
     evaluate(grid)
+
+
+if __name__ == "__main__" and sys.argv[1] == "family":
+    base = dict(n_doc=150, n_full=40, w_sel=0.3, k=3, w_rel=0.15, w_sup=0.5)
+    grid = [dict(base, rerank=kk, mode=mode, lam=lam) for kk in (5, 10) for mode in ("rank", "gate") for lam in (0.25, 0.5, 1.0)]
+    evaluate(grid)
+
+
+if __name__ == "__main__" and sys.argv[1] == "family0":
+    base = dict(n_doc=150, n_full=40, w_sel=0.3, k=3, w_rel=0.15, w_sup=0.5, mode="gate")
+    evaluate([dict(base, rerank=5, lam=0.0), dict(base, rerank=5, lam=0.25), dict(base, rerank=5, lam=0.1)])
