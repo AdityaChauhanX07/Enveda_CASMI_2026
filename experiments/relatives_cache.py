@@ -489,7 +489,7 @@ def evaluate_selection(variants: list[dict]) -> None:
         for m in mols:
             acc = {}
             for win, w in windows[m].items():
-                nd = min(150, len(w["rows"]))
+                nd = min(v.get("n_doc", 150), len(w["rows"]))
                 part = w["part"][:nd]
                 cand = list(np.argsort(-part, kind="stable")[: v["n_part"]]) + list(range(min(v["n_docrank"], nd)))
                 cand = [i for i in dict.fromkeys(cand) if np.isfinite(w["full"][i])]
@@ -497,7 +497,7 @@ def evaluate_selection(variants: list[dict]) -> None:
                 if len(cand) < 3:
                     continue
                 fv = np.array([w["full"][i] for i in cand]); fz = dict(zip(cand, (fv - fv.mean()) / (fv.std() + 1e-9)))
-                for i in sorted(cand, key=lambda i: -(fz[i] + 0.3 * w["doc"][i]))[:3]:
+                for i in sorted(cand, key=lambda i: -(fz[i] + v.get("w_sel", 0.3) * w["doc"][i]))[: v.get("k", 3)]:
                     for key, zp in prods(m, win, int(w["rows"][i]), w["smiles"][i]):
                         a = acc.setdefault(key, dict(zp=zp, doc=0.0, routes=set()))
                         a["doc"] = max(a["doc"], float(w["doc"][i])); a["routes"].add((int(w["rows"][i]),) + win)
@@ -515,3 +515,11 @@ def evaluate_selection(variants: list[dict]) -> None:
 if __name__ == "__main__" and sys.argv[1] == "selection":
     evaluate_selection([dict(n_part=40, n_docrank=0), dict(n_part=30, n_docrank=10), dict(n_part=25, n_docrank=15),
                         dict(n_part=20, n_docrank=20), dict(n_part=40, n_docrank=10), dict(n_part=40, n_docrank=20)])
+
+
+if __name__ == "__main__" and sys.argv[1] == "selection2":
+    a6 = dict(n_doc=150, n_part=20, n_docrank=20, k=3, w_sel=0.3)
+    grid = [a6] + [dict(a6, n_doc=n) for n in (200, 300)] + [dict(a6, n_docrank=30), dict(a6, n_part=15, n_docrank=25)] + \
+           [dict(a6, k=4), dict(a6, k=5)] + [dict(a6, w_sel=w) for w in (0.0, 0.6)] + \
+           [dict(a6, n_doc=300, n_docrank=30), dict(a6, n_doc=200, k=4), dict(a6, n_doc=300, k=4)]
+    evaluate_selection(grid)
