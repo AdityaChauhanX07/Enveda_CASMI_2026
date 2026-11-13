@@ -1,6 +1,6 @@
 """Append the networking overlay as the last cell of a forked notebook.
 
-Usage: python tools/add_overlay.py IN.ipynb OUT.ipynb [lam] [--edit [--relatives [--docrank]]]   (--edit also appends the edit generator)
+Usage: python tools/add_overlay.py IN.ipynb OUT.ipynb [lam] [--edit [--relatives [--docrank] [--k4]]]   (--edit also appends the edit generator)
 The cell runs after every layer of the fork, re-orders submission.csv in place and keeps the fork's file on any
 error. It is skipped in a fast commit (dummy answers).
 """
@@ -108,5 +108,7 @@ if __name__ == "__main__":
         params = dict(relatives=1, max_seconds=4800, rel_seconds=3600) if "--relatives" in sys.argv else {}
         if "--docrank" in sys.argv:            # a6: 20 rows by the ECFP4 pass + 20 best-documented rows fully scored per window
             params.update(rel_n_full=20, rel_n_docrank=20)
+        if "--k4" in sys.argv:                 # a7: four relatives kept per window (panel: class-3 0.238 -> 0.258, same time)
+            params.update(rel_k=4)
         add_edit(Path(args[1]), params)
     print("written", args[1])
