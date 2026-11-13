@@ -59,7 +59,10 @@ def graph(test: pd.DataFrame, p=PARAMS) -> dict:
     """molecule -> [(neighbour, cosine)] for pairs above the thresholds."""
     groups = {}
     for r in test.itertuples(index=False):
-        mz, w = _prepare(r.ms2_mzs, r.ms2_normalized_intensities, float(r.precursor_mz), p["top_n"], p["min_rel"])
+        try:                                   # an unreadable spectrum is simply left out of the graph
+            mz, w = _prepare(r.ms2_mzs, r.ms2_normalized_intensities, float(r.precursor_mz), p["top_n"], p["min_rel"])
+        except Exception:
+            continue
         groups.setdefault(str(r.adduct), []).append((str(r.molecule_id), (float(r.precursor_mz), mz, w)))
     best = {}
     for items in groups.values():
@@ -97,14 +100,43 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS) -
             fps[s] = gen.GetFingerprint(m) if m is not None else None
         return fps[s]
 
-    changed, top1, linked = 0, 0, 0
+    changed, top1, linked, errors = 0, 0, 0, 0
     new = {}
     for m, cand in lists.items():
         if m not in nbr or len(cand) < 2:
             continue
+        try:
+            res = _reorder(m, cand, lists, nbr, fp, p)
+        except Exception:                      # one odd molecule keeps its order; the others are still re-ordered
+            errors += 1
+            continue
+        if res is None:
+            continue
+        linked += 1
+        order = res
+        if (order != np.arange(len(cand))).any():
+            changed += 1
+            top1 += int(order[0] != 0)
+            new[m] = [cand[i] for i in order]
+    out = sub.copy()
+    out["smiles"] = [";".join(new.get(m, lists[m])) for m in out.molecule_id]
+    assert out.molecule_id.tolist() == sub.molecule_id.tolist()
+    assert all(sorted(a.split(";")) == sorted(b.split(";")) for a, b in zip(out.smiles, sub.smiles))
+    out.to_csv(output_path, index=False)
+    report = dict(params=p, molecules=len(sub), linked=linked, edges=sum(len(v) for v in nbr.values()) // 2,
+                  reordered=changed, rank1_changed=top1, errors=errors)
+    if report_path:
+        Path(report_path).write_text(json.dumps(report, indent=2))
+    return report
+
+
+def _reorder(m, cand, lists, nbr, fp, p):
+    """New order of molecule m's list, or None when it has no usable neighbour evidence."""
+    from rdkit import DataStructs
+    if True:
         own = [fp(s) for s in cand]
         if any(f is None for f in own):
-            continue
+            return None
         acc, wsum = np.zeros(len(cand)), 0.0
         for a, w in nbr[m]:
             other = [fp(s) for s in lists.get(a, [])[: p["max_list"]]]
@@ -117,21 +149,6 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS) -
                 sims += pj * np.asarray(DataStructs.BulkTanimotoSimilarity(f, own))
             acc += w * sims; wsum += w
         if not wsum:
-            continue
-        linked += 1
+            return None
         score = -np.log1p(np.arange(len(cand))) + p["lam"] * acc / wsum
-        order = np.argsort(-score, kind="stable")
-        if (order != np.arange(len(cand))).any():
-            changed += 1
-            top1 += int(order[0] != 0)
-            new[m] = [cand[i] for i in order]
-    out = sub.copy()
-    out["smiles"] = [";".join(new.get(m, lists[m])) for m in out.molecule_id]
-    assert out.molecule_id.tolist() == sub.molecule_id.tolist()
-    assert all(sorted(a.split(";")) == sorted(b.split(";")) for a, b in zip(out.smiles, sub.smiles))
-    out.to_csv(output_path, index=False)
-    report = dict(params=p, molecules=len(sub), linked=linked, edges=sum(len(v) for v in nbr.values()) // 2,
-                  reordered=changed, rank1_changed=top1)
-    if report_path:
-        Path(report_path).write_text(json.dumps(report, indent=2))
-    return report
+        return np.argsort(-score, kind="stable")

@@ -307,18 +307,20 @@ def molecule_spectra(test: pd.DataFrame, v4) -> tuple[dict, dict]:
     test["nm"] = v4["chem"].neutral_mass(test.precursor_mz.values.astype(np.float64), test.adduct.values)
     spectra, target = {}, {}
     for mid, sub in test.groupby("molecule_id", sort=False):
-        nms = sub.nm.values[np.isfinite(sub.nm.values)]
-        if not len(nms):
+        try:                            # a molecule whose rows cannot be read is left out (its list stays as it is)
+            nms = sub.nm.values[np.isfinite(sub.nm.values)]
+            if not len(nms):
+                continue
+            out = []
+            for r in sub.itertuples():
+                ce = r.collision_energy_ev
+                arr = np.atleast_1d(np.asarray(ce, dtype=float)) if ce is not None else np.zeros(0)
+                out.append(dict(mz=np.asarray(r.ms2_mzs, np.float64), it=np.asarray(r.ms2_normalized_intensities, np.float64),
+                                mode=1 if r.ionization_mode == "positive" else -1, adduct=r.adduct, prec=float(r.precursor_mz),
+                                ce=float(arr.mean()) if len(arr) else np.nan, ce_n=int(len(arr)) if len(arr) else 1))
+            target[str(mid)] = float(np.median(nms)); spectra[str(mid)] = out
+        except Exception:
             continue
-        target[str(mid)] = float(np.median(nms))
-        out = []
-        for r in sub.itertuples():
-            ce = r.collision_energy_ev
-            arr = np.atleast_1d(np.asarray(ce, dtype=float)) if ce is not None else np.zeros(0)
-            out.append(dict(mz=np.asarray(r.ms2_mzs, np.float64), it=np.asarray(r.ms2_normalized_intensities, np.float64),
-                            mode=1 if r.ionization_mode == "positive" else -1, adduct=r.adduct, prec=float(r.precursor_mz),
-                            ce=float(arr.mean()) if len(arr) else np.nan, ce_n=int(len(arr)) if len(arr) else 1))
-        spectra[str(mid)] = out
     return spectra, target
 
 
@@ -333,6 +335,17 @@ def propose(lists: dict, nbr: dict, target: dict, chem: Chemistry, p: dict, t0: 
             break
         if b not in nbr or b not in target:
             continue
+        try:
+            _propose_one(b, cand, lists, nbr, target, chem, p, tier, meta, out)
+        except Exception:               # a molecule that fails gets no neighbour products
+            out.pop(b, None)
+            if meta is not None:
+                meta.pop(b, None)
+    return out
+
+
+def _propose_one(b, cand, lists, nbr, target, chem, p, tier, meta, out) -> None:
+    if True:
         have = {chem.key(s) for s in cand}
         tol_b = target[b] * 10e-6 + 1e-3
         for a, _ in nbr[b]:
@@ -354,17 +367,19 @@ def propose(lists: dict, nbr: dict, target: dict, chem: Chemistry, p: dict, t0: 
                                 src_doc = tier.doc(chem.mass(smi), chem.Chem.MolToInchiKey(m_)[:14]) if m_ is not None else 0.0
                             e_ = meta.setdefault(b, {}).setdefault(k, [0.0, set()])
                             e_[0] = max(e_[0], src_doc); e_[1].add((a, rank, eid))
-    return out
 
 
 def loss_edits(spectra: list[dict], tol: float = 0.01, min_rel: float = 0.01) -> set:
     """Edits whose added group shows up as a neutral loss (a peak at precursor - d) in any spectrum."""
     out = set()
     for s in spectra:
-        mz, it = np.asarray(s["mz"], float), np.asarray(s["it"], float)
-        if not len(mz) or it.max() <= 0:
+        try:
+            mz, it = np.asarray(s["mz"], float), np.asarray(s["it"], float)
+        except Exception:
             continue
-        it = it / it.max()
+        if not len(mz) or len(it) != len(mz) or not np.isfinite(it).any() or np.nanmax(it) <= 0:
+            continue
+        it = it / np.nanmax(it)
         for e in GENUINE_LOSS:
             hit = np.abs(mz - (float(s["prec"]) - FORWARD[e][0])) <= tol
             if hit.any() and it[hit].max() >= min_rel:
@@ -420,6 +435,12 @@ def relative_products(M: float, z: np.ndarray, mu: float, sd: float, tier: "Tier
     return [(a["zp"] + p["rel_beta"] + p["rel_w_doc"] * a["doc"] + p["rel_w_sup"] * float(np.log(len(a["routes"]))) + a["loss"],
              a["smi"], k, dict(src="rel", routes=len(a["routes"]), doc=a["doc"], z=a["zp"]))
             for k, a in acc.items() if a is not None]
+
+
+def _note_error(report: dict, where: str, molecule, e: Exception) -> None:
+    report["errors"] = report.get("errors", 0) + 1
+    if len(report.setdefault("error_samples", [])) < 5:
+        report["error_samples"].append(f"{where} {molecule}: {type(e).__name__}: {str(e)[:120]}")
 
 
 def merge_sources(scored: list, bonus: float) -> list:
@@ -556,40 +577,43 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
         if time.time() - t0 > p["max_seconds"]:
             report["stopped_early"] = True
             break
-        P = prods.get(b, {})
-        z = logits_fn(b) if logits_fn else query_logits(bank, v4, spectra[b])
-        if z is None:
-            continue
-        lo, hi = tier.window(target[b], p["window_ppm"])
-        rows = np.arange(lo, hi) if hi - lo <= p["window_sample"] else np.sort(rng.choice(np.arange(lo, hi), p["window_sample"], replace=False))
-        ref = [chem.fingerprint(tier.smiles(int(r))) for r in rows]
-        ref = np.array([f @ z for f in ref if f is not None])
-        if len(ref) < 10:
-            continue
-        mu, sd = float(ref.mean()), float(ref.std() + 1e-9)
-        cand = lists[b]
-        top = []
-        for s in cand[: p["max_rank"]]:
-            f = chem.fingerprint(s)
-            if f is None:
-                top.append(np.inf); continue
-            conn = chem.Chem.MolToInchiKey(chem.Chem.MolFromSmiles(s))[:14]
-            top.append((f @ z - mu) / sd + p["w_doc"] * tier.doc(chem.mass(s), conn))
-        scored = []
-        for k, s in P.items():
-            f = chem.fingerprint(s)
-            if f is None:
+        try:
+            P = prods.get(b, {})
+            z = logits_fn(b) if logits_fn else query_logits(bank, v4, spectra[b])
+            if z is None:
                 continue
-            zp = float((f @ z - mu) / sd)
-            src_doc, routes = nb_meta.get(b, {}).get(k, (0.0, {None}))
-            meta = dict(src="nb", routes=len(routes), doc=float(src_doc), z=zp)
-            if p["nb_score"] == "doc":
-                scored.append((zp + p["nb_beta"] + p["nb_w_doc"] * src_doc + p["nb_w_sup"] * float(np.log(len(routes))), s, k, meta))
-            else:
-                scored.append((zp + p["beta"], s, k, meta))
-        ck = [chem.key(s) for s in cand]
-        state[b] = dict(z=z, mu=mu, sd=sd, top=top, scored=scored, cand_keys=ck,
-                        have=set(ck) | set(P) if p["rel_exclude_nb"] else set(ck))
+            lo, hi = tier.window(target[b], p["window_ppm"])
+            rows = np.arange(lo, hi) if hi - lo <= p["window_sample"] else np.sort(rng.choice(np.arange(lo, hi), p["window_sample"], replace=False))
+            ref = [chem.fingerprint(tier.smiles(int(r))) for r in rows]
+            ref = np.array([f @ z for f in ref if f is not None])
+            if len(ref) < 10:
+                continue
+            mu, sd = float(ref.mean()), float(ref.std() + 1e-9)
+            cand = lists[b]
+            top = []
+            for s in cand[: p["max_rank"]]:
+                f = chem.fingerprint(s)
+                if f is None:
+                    top.append(np.inf); continue
+                conn = chem.Chem.MolToInchiKey(chem.Chem.MolFromSmiles(s))[:14]
+                top.append((f @ z - mu) / sd + p["w_doc"] * tier.doc(chem.mass(s), conn))
+            scored = []
+            for k, s in P.items():
+                f = chem.fingerprint(s)
+                if f is None:
+                    continue
+                zp = float((f @ z - mu) / sd)
+                src_doc, routes = nb_meta.get(b, {}).get(k, (0.0, {None}))
+                meta = dict(src="nb", routes=len(routes), doc=float(src_doc), z=zp)
+                if p["nb_score"] == "doc":
+                    scored.append((zp + p["nb_beta"] + p["nb_w_doc"] * src_doc + p["nb_w_sup"] * float(np.log(len(routes))), s, k, meta))
+                else:
+                    scored.append((zp + p["beta"], s, k, meta))
+            ck = [chem.key(s) for s in cand]
+            state[b] = dict(z=z, mu=mu, sd=sd, top=top, scored=scored, cand_keys=ck,
+                            have=set(ck) | set(P) if p["rel_exclude_nb"] else set(ck))
+        except Exception as e:  # one odd molecule must not stop the overlay
+            _note_error(report, "pass1", b, e)
     if p["relatives"] and state:        # pass 2: PubChem relatives, weakest lists first, under a time budget
         order = sorted(state, key=lambda b: state[b]["top"][0] if state[b]["top"] else -np.inf)
         order = [b for b in order if not (state[b]["top"] and state[b]["top"][0] >= p["guard"])]
@@ -600,30 +624,33 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
             pickle.dump({b: dict(top=st["top"], cand_keys=st["cand_keys"], scored=[(x[0], x[2], x[3]) for x in st["scored"]])
                          for b, st in state.items()}, fh)
     for b, st in state.items():         # pass 3: insert the best products into the top max_rank slots
-        items = st["scored"] if p["rel_exclude_nb"] else merge_sources(st["scored"], p["agree_bonus"])
-        top, scored, cand = st["top"], sorted(items, key=lambda x: -x[0]), lists[b]
-        if not scored or (top and top[0] >= p["guard"]):
-            continue
-        slots = {}
-        for item in scored[: p["max_insert"]]:
-            sp_, s = item[0], item[1]
-            beaten_by = [i for i, si in enumerate(top) if si >= sp_]
-            r = max((max(beaten_by) + 1) if beaten_by else 0, p["min_slot"])
-            if r < p["max_rank"]:
-                slots.setdefault(r, []).append(s)
-        if not slots:
-            continue
-        out = []
-        for i, s in enumerate(cand):
-            out.extend(slots.get(i, []))
-            out.append(s)
-        seen, final = set(), []
-        for s in out:
-            k = chem.key(s) or s
-            if k not in seen:
-                seen.add(k); final.append(s)
-        new[b] = final[:25]
-        report["inserted"] += sum(len(v) for v in slots.values()); report["molecules_changed"] += 1
+        try:
+            items = st["scored"] if p["rel_exclude_nb"] else merge_sources(st["scored"], p["agree_bonus"])
+            top, scored, cand = st["top"], sorted(items, key=lambda x: -x[0]), lists[b]
+            if not scored or (top and top[0] >= p["guard"]):
+                continue
+            slots = {}
+            for item in scored[: p["max_insert"]]:
+                sp_, s = item[0], item[1]
+                beaten_by = [i for i, si in enumerate(top) if si >= sp_]
+                r = max((max(beaten_by) + 1) if beaten_by else 0, p["min_slot"])
+                if r < p["max_rank"]:
+                    slots.setdefault(r, []).append(s)
+            if not slots:
+                continue
+            out = []
+            for i, s in enumerate(cand):
+                out.extend(slots.get(i, []))
+                out.append(s)
+            seen, final = set(), []
+            for s in out:
+                k = chem.key(s) or s
+                if k not in seen:
+                    seen.add(k); final.append(s)
+            new[b] = final[:25]
+            report["inserted"] += sum(len(v) for v in slots.values()); report["molecules_changed"] += 1
+        except Exception as e:  # one odd molecule must not stop the overlay
+            _note_error(report, "pass3", b, e)
     out = sub.copy()
     out["smiles"] = [";".join(new.get(str(m), lists[str(m)])) for m in out.molecule_id]
     assert out.molecule_id.tolist() == sub.molecule_id.tolist()
