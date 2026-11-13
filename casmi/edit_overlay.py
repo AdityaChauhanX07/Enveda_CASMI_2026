@@ -36,6 +36,11 @@ PARAMS = dict(cos_min=0.5, min_matches=4, top_neighbour=3, beta=3.0, w_doc=0.4, 
               # neighbour products: "doc" = z + nb_beta + nb_w_doc * source doc + nb_w_sup * log(routes); panel, 2 draws at
               # 25 % class 3: +0.018 / +0.009 (class-2 -0.001) vs "beta" (z + 3): +0.009 / +0.002 (class-2 -0.003/-0.004)
               nb_score="doc", nb_beta=0.0, nb_w_doc=0.2, nb_w_sup=0.5,
+              # rel_exclude_nb=0: the PubChem-relative search also scores structures the neighbour edits proposed and the
+              # insertion step keeps the better-scored entry per structure (+ agree_bonus when both generators proposed
+              # it). Panel (experiments/agreement_replay.py): class-3 0.185 -> 0.205 with class-2 unchanged (-0.0060);
+              # a bonus of 0.5 / 1 / 2 costs class 2 -0.008 / -0.012 / -0.025, so the bonus stays 0
+              rel_exclude_nb=0, agree_bonus=0.0,
               dump_state="")               # offline analysis only: pickle every scored product before insertion
 FORWARD = {
     "O-methyl": (14.01565, "[OX2H1:1]>>[O:1]C"),
@@ -417,6 +422,24 @@ def relative_products(M: float, z: np.ndarray, mu: float, sd: float, tier: "Tier
             for k, a in acc.items() if a is not None]
 
 
+def merge_sources(scored: list, bonus: float) -> list:
+    """One entry per product key: the better-scored entry, plus `bonus` when both generators proposed the key."""
+    best, srcs = {}, {}
+    for item in scored:
+        k = item[2]
+        srcs.setdefault(k, set()).add(item[3]["src"])
+        if k not in best or item[0] > best[k][0]:
+            best[k] = item
+    out = []
+    for k, item in best.items():
+        if len(srcs[k]) > 1:
+            g, smi, key, meta = item
+            out.append((g + bonus, smi, key, dict(meta, src="both")))
+        else:
+            out.append(item)
+    return out
+
+
 _RW = {}
 
 
@@ -565,7 +588,8 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
             else:
                 scored.append((zp + p["beta"], s, k, meta))
         ck = [chem.key(s) for s in cand]
-        state[b] = dict(z=z, mu=mu, sd=sd, top=top, scored=scored, cand_keys=ck, have=set(ck) | set(P))
+        state[b] = dict(z=z, mu=mu, sd=sd, top=top, scored=scored, cand_keys=ck,
+                        have=set(ck) | set(P) if p["rel_exclude_nb"] else set(ck))
     if p["relatives"] and state:        # pass 2: PubChem relatives, weakest lists first, under a time budget
         order = sorted(state, key=lambda b: state[b]["top"][0] if state[b]["top"] else -np.inf)
         order = [b for b in order if not (state[b]["top"] and state[b]["top"][0] >= p["guard"])]
@@ -576,7 +600,8 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
             pickle.dump({b: dict(top=st["top"], cand_keys=st["cand_keys"], scored=[(x[0], x[2], x[3]) for x in st["scored"]])
                          for b, st in state.items()}, fh)
     for b, st in state.items():         # pass 3: insert the best products into the top max_rank slots
-        top, scored, cand = st["top"], sorted(st["scored"], key=lambda x: -x[0]), lists[b]
+        items = st["scored"] if p["rel_exclude_nb"] else merge_sources(st["scored"], p["agree_bonus"])
+        top, scored, cand = st["top"], sorted(items, key=lambda x: -x[0]), lists[b]
         if not scored or (top and top[0] >= p["guard"]):
             continue
         slots = {}
