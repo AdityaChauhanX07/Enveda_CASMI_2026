@@ -34,9 +34,11 @@ in the private 69 % (speculation, thread 755039), so class-3 gains matter more t
 - **Both generators end to end** (`edit_overlay_panel.py --relatives=1`): **+0.039 / +0.042 at 25 % class 3**
   (class-3 lists 0.175 / 0.186, class-2 lists -0.005); break-even class-3 share ~3 %.
 
-**Notebooks.** a4 = Fork A + networking + neighbour edits: smoke run passed. a5 = Fork A + networking + both
-generators (final settings) and b5 = Fork B + the same: built; relative search checked on Kaggle CPU (code path,
-runtime). GPU quota is spent until Saturday 00:00 UTC; a scheduled check-in at 00:10 UTC smoke-tests and submits both.
+**Notebooks.** a6 = Fork A + networking + both generators with the a6 setting (20 ECFP4 + 20 best-documented rows
+fully scored per window; panel net +0.0182 / +0.0549 at 10 / 25 % class 3, class-3 lists 0.238, class-2 -0.0062) and
+b6 = Fork B + the same; hardened against odd inputs (per-molecule isolation, edge-case harness clean locally and on
+Kaggle with the real models). Relative search budget 60 min in the scoring run (~75 % coverage). The user approved
+a6/b6 for Saturday; a scheduled check-in at 00:10 UTC Sat (after the quota reset) smoke-tests and submits both.
 
 **Next.** (1) Saturday after the quota reset: submit a5. (2) Generator recall/ranking (more relatives, NP acyl and
 sulfate edits, 2-step edits), validated on the panel. (3) Look for a class-2 lever beyond the shared stack.
