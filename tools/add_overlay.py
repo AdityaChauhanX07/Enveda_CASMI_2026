@@ -102,6 +102,8 @@ if __name__ == "__main__":
     lam = float(args[2]) if len(args) > 2 else 4.0
     build(Path(args[0]), Path(args[1]), {"lam": lam})
     if "--edit" in sys.argv:
-        # --relatives also turns on the PubChem-relative products (panel: class-2 0.0000, class-3 +0.053)
-        add_edit(Path(args[1]), dict(relatives=1, max_seconds=3600, rel_seconds=2400) if "--relatives" in sys.argv else {})
+        # --relatives also turns on the PubChem-relative products. Budget: 60 min for the relative search (task 4,
+        # experiments/search_order.py: weakest lists first keeps 88 % of the full-coverage gain at 50 % coverage,
+        # ~96 % at 75 %); the cell still caps everything at the time left before 8.5 h
+        add_edit(Path(args[1]), dict(relatives=1, max_seconds=4800, rel_seconds=3600) if "--relatives" in sys.argv else {})
     print("written", args[1])
