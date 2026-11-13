@@ -121,7 +121,11 @@ if __name__ == "__main__":
     print("NETWORK", report["network"], flush=True)
     rng = np.random.default_rng(0)
     fake = {m: rng.normal(-1.6, 1.6, 10226) for m in ids}
-    p = dict(device="cuda" if real else "cpu", relatives=1, max_seconds=1500, rel_seconds=900)
+    dev = "cpu"
+    if real:
+        import torch
+        dev = "cuda" if torch.cuda.is_available() else "cpu"
+    p = dict(device=dev, relatives=1, max_seconds=1500, rel_seconds=900)
     t0 = time.time()
     if real:
         rep = edit_overlay.apply(OUT / "test.parquet", OUT / "sub_net.csv", OUT / "sub_edit.csv", None, p)
