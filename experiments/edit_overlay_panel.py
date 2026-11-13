@@ -66,6 +66,9 @@ if __name__ == "__main__":
             rows.append((m, ";".join(cand)))
         sub = pd.DataFrame(rows, columns=["molecule_id", "smiles"])
         sub.to_csv(art / "np_sub.csv", index=False)
+        if extra.get("dump_state"):              # one state file per run: class-2 lists, class-3 lists or a mixed draw
+            tag = "c2" if seed is None else ("c3" if seed == -1 else f"mix{seed}")
+            kw = dict(kw, p=dict(kw["p"], dump_state=f"{extra['dump_state']}_{tag}.pkl"))
         rep = edit_overlay.apply(art / "np_test.parquet", art / "np_sub.csv", art / "np_sub_edit.csv", None, **kw)
         after = pd.read_csv(art / "np_sub_edit.csv", dtype=str, keep_default_na=False)
         if dropped and len(dropped) < len(sol):

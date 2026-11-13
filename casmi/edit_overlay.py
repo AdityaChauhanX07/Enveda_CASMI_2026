@@ -35,7 +35,8 @@ PARAMS = dict(cos_min=0.5, min_matches=4, top_neighbour=3, beta=3.0, w_doc=0.4, 
               rel_k=3, rel_seconds=1800,
               # neighbour products: "doc" = z + nb_beta + nb_w_doc * source doc + nb_w_sup * log(routes); panel, 2 draws at
               # 25 % class 3: +0.018 / +0.009 (class-2 -0.001) vs "beta" (z + 3): +0.009 / +0.002 (class-2 -0.003/-0.004)
-              nb_score="doc", nb_beta=0.0, nb_w_doc=0.2, nb_w_sup=0.5)
+              nb_score="doc", nb_beta=0.0, nb_w_doc=0.2, nb_w_sup=0.5,
+              dump_state="")               # offline analysis only: pickle every scored product before insertion
 FORWARD = {
     "O-methyl": (14.01565, "[OX2H1:1]>>[O:1]C"),
     "N-methyl": (14.01565, "[NX3;H1,H2;!$(NC=O):1]>>[N:1]C"),
@@ -398,7 +399,8 @@ def relative_products(M: float, z: np.ndarray, mu: float, sd: float, tier: "Tier
                 if sign < 0 and e in losses:
                     a["loss"] = p["rel_w_loss"]
     return [(a["zp"] + p["rel_beta"] + p["rel_w_doc"] * a["doc"] + p["rel_w_sup"] * float(np.log(len(a["routes"]))) + a["loss"],
-             a["smi"], k) for k, a in acc.items() if a is not None]
+             a["smi"], k, dict(src="rel", routes=len(a["routes"]), doc=a["doc"], z=a["zp"]))
+            for k, a in acc.items() if a is not None]
 
 
 _RW = {}
@@ -429,7 +431,7 @@ def relatives_pass(order: list, state: dict, target: dict, spectra: dict, tier: 
     done = set()
 
     def absorb(b, rp):
-        state[b]["scored"] += [(g, smi) for g, smi, _ in rp]
+        state[b]["scored"] += list(rp)
         report["relative_molecules"] += 1; report["relative_products"] += len(rp); done.add(b)
 
     # window look-ups binary-search the 0.85 GB mass array: on Kaggle's network-mounted datasets each page fault is
@@ -541,23 +543,31 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
             f = chem.fingerprint(s)
             if f is None:
                 continue
+            zp = float((f @ z - mu) / sd)
+            src_doc, routes = nb_meta.get(b, {}).get(k, (0.0, {None}))
+            meta = dict(src="nb", routes=len(routes), doc=float(src_doc), z=zp)
             if p["nb_score"] == "doc":
-                src_doc, routes = nb_meta.get(b, {}).get(k, (0.0, {None}))
-                scored.append(((f @ z - mu) / sd + p["nb_beta"] + p["nb_w_doc"] * src_doc
-                               + p["nb_w_sup"] * float(np.log(len(routes))), s))
+                scored.append((zp + p["nb_beta"] + p["nb_w_doc"] * src_doc + p["nb_w_sup"] * float(np.log(len(routes))), s, k, meta))
             else:
-                scored.append(((f @ z - mu) / sd + p["beta"], s))
-        state[b] = dict(z=z, mu=mu, sd=sd, top=top, scored=scored, have={chem.key(s) for s in cand} | set(P))
+                scored.append((zp + p["beta"], s, k, meta))
+        ck = [chem.key(s) for s in cand]
+        state[b] = dict(z=z, mu=mu, sd=sd, top=top, scored=scored, cand_keys=ck, have=set(ck) | set(P))
     if p["relatives"] and state:        # pass 2: PubChem relatives, weakest lists first, under a time budget
         order = sorted(state, key=lambda b: state[b]["top"][0] if state[b]["top"] else -np.inf)
         order = [b for b in order if not (state[b]["top"] and state[b]["top"][0] >= p["guard"])]
         relatives_pass(order, state, target, spectra, tier, chem, bits, p, t0 + p["rel_seconds"], report)
+    if p.get("dump_state"):
+        import pickle
+        with open(p["dump_state"], "wb") as fh:
+            pickle.dump({b: dict(top=st["top"], cand_keys=st["cand_keys"], scored=[(x[0], x[2], x[3]) for x in st["scored"]])
+                         for b, st in state.items()}, fh)
     for b, st in state.items():         # pass 3: insert the best products into the top max_rank slots
         top, scored, cand = st["top"], sorted(st["scored"], key=lambda x: -x[0]), lists[b]
         if not scored or (top and top[0] >= p["guard"]):
             continue
         slots = {}
-        for sp_, s in scored[: p["max_insert"]]:
+        for item in scored[: p["max_insert"]]:
+            sp_, s = item[0], item[1]
             beaten_by = [i for i, si in enumerate(top) if si >= sp_]
             r = max((max(beaten_by) + 1) if beaten_by else 0, p["min_slot"])
             if r < p["max_rank"]:
