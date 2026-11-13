@@ -33,6 +33,10 @@ PARAMS = dict(cos_min=0.5, min_matches=4, top_neighbour=3, beta=3.0, w_doc=0.4, 
               # class-3 +0.194 (halves 0.162 / 0.226)
               relatives=0, rel_beta=0.0, rel_w_doc=0.15, rel_w_sup=0.5, rel_w_loss=0.0, rel_n_doc=150, rel_n_full=40,
               rel_k=3, rel_seconds=1800,
+              # rows fully scored per window = rel_n_full best by the ECFP4 pass + the rel_n_docrank best-documented rows
+              # (a6 candidate, experiments/relatives_cache.py selection: 20 + 20 -> 157 answers rebuilt vs 143, class-3
+              # 0.196 -> 0.232 with fewer fingerprints; default 0 keeps the a5/b5 behaviour)
+              rel_n_docrank=0,
               # neighbour products: "doc" = z + nb_beta + nb_w_doc * source doc + nb_w_sup * log(routes); panel, 2 draws at
               # 25 % class 3: +0.018 / +0.009 (class-2 -0.001) vs "beta" (z + 3): +0.009 / +0.002 (class-2 -0.003/-0.004)
               nb_score="doc", nb_beta=0.0, nb_w_doc=0.2, nb_w_sup=0.5,
@@ -408,7 +412,8 @@ def relative_products(M: float, z: np.ndarray, mu: float, sd: float, tier: "Tier
         keep = np.argsort(-doc, kind="stable")[: p["rel_n_doc"]]
         part = np.array([chem.partial(smi_at(int(j)), z_e) for j in keep])
         raw, idx = [], []
-        for j in keep[np.argsort(-part, kind="stable")[: p["rel_n_full"]]]:
+        pick = list(np.argsort(-part, kind="stable")[: p["rel_n_full"]]) + list(range(min(p.get("rel_n_docrank", 0), len(keep))))
+        for j in keep[list(dict.fromkeys(pick))]:
             f = chem.fingerprint(smi_at(int(j)))
             if f is not None:
                 raw.append(float(f @ z)); idx.append(int(j))

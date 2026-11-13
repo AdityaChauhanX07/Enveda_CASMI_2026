@@ -1,6 +1,6 @@
 """Append the networking overlay as the last cell of a forked notebook.
 
-Usage: python tools/add_overlay.py IN.ipynb OUT.ipynb [lam] [--edit [--relatives]]   (--edit also appends the edit generator)
+Usage: python tools/add_overlay.py IN.ipynb OUT.ipynb [lam] [--edit [--relatives [--docrank]]]   (--edit also appends the edit generator)
 The cell runs after every layer of the fork, re-orders submission.csv in place and keeps the fork's file on any
 error. It is skipped in a fast commit (dummy answers).
 """
@@ -105,5 +105,8 @@ if __name__ == "__main__":
         # --relatives also turns on the PubChem-relative products. Budget: 60 min for the relative search (task 4,
         # experiments/search_order.py: weakest lists first keeps 88 % of the full-coverage gain at 50 % coverage,
         # ~96 % at 75 %); the cell still caps everything at the time left before 8.5 h
-        add_edit(Path(args[1]), dict(relatives=1, max_seconds=4800, rel_seconds=3600) if "--relatives" in sys.argv else {})
+        params = dict(relatives=1, max_seconds=4800, rel_seconds=3600) if "--relatives" in sys.argv else {}
+        if "--docrank" in sys.argv:            # a6: 20 rows by the ECFP4 pass + 20 best-documented rows fully scored per window
+            params.update(rel_n_full=20, rel_n_docrank=20)
+        add_edit(Path(args[1]), params)
     print("written", args[1])

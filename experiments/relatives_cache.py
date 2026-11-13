@@ -438,3 +438,80 @@ def evaluate_sets(v: dict) -> None:
 
 if __name__ == "__main__" and sys.argv[1] == "sets":
     evaluate_sets(dict(n_doc=150, n_full=40, w_sel=0.3, k=3, w_rel=0.15, w_sup=0.5))
+
+
+def evaluate_selection(variants: list[dict]) -> None:
+    """Which rows get the full fingerprint score: n_part best by the ECFP4 pass plus the n_docrank best-documented
+    rows (within the 150-row pre-filter); then the top 3 by standardised full score + 0.3 doc, as shipped.
+    23-window set (REL_SKIP removed, four new strip edits added); relative products only."""
+    from rdkit.Chem import AllChem
+    from casmi.edit_overlay import REL_SKIP, Chemistry
+    from casmi.panel import load_candidates
+    from new_edits_coverage import NEW_STRIP
+    from panel_fp_matrix import PanelFP, score_frame
+    from pubchem_relatives_merge import lists_and_gate, merge, rr
+    chem = Chemistry(np.load(EXT / "foldsafe" / "fp_bits.npy"))
+    new_rx = {e: AllChem.ReactionFromSmarts(NEW_STRIP[e]) for e in ("sulfate", "coumaroyl", "caffeoyl", "galloyl")}
+    L = np.load(ROOT / "artifacts" / "panel_logits_foldsafe.npz")
+    zs = [0.5 * (L[f"single{k}"].astype(np.float64) + L[f"merged{k}"].astype(np.float64)) for k in range(5)]
+    Z = dict(zip([str(k) for k in L["keys"]], np.mean(zs, axis=0)))
+    c = load_candidates(); c["raw"] = score_frame(c, Z, PanelFP())
+    st = c.groupby("molecule").raw.agg(["mean", "std"])
+    lists = lists_and_gate(c, 0.4); mols = sorted(lists)
+    p = pd.read_parquet(EXT / "panel" / "panel.parquet"); p["molecule"] = p.molecule.astype(str)
+    M = dict(zip(p.molecule, p.measured_neutral_mass))
+    memo = {}
+
+    def prods(m, win, row, smi):
+        k = (m, row) + win
+        if k not in memo:
+            e, sign = win
+            rx = new_rx[e] if e in new_rx else (chem.fwd[e][1] if sign < 0 else chem.strip[e][1])
+            out = []
+            for key, ps in chem.products(smi, rx, cap=50).items():
+                pm = chem.mass(ps)
+                f = chem.fingerprint(ps) if np.isfinite(pm) and abs(pm - M[m]) <= M[m] * 15e-6 else None
+                if f is not None:
+                    out.append((key, float((f @ Z[m] - st.loc[m, "mean"]) / st.loc[m, "std"])))
+            memo[k] = out
+        return memo[k]
+
+    windows = {}
+    for m in mols:
+        ws = {}
+        if (CACHE / f"{m}.pkl").is_file():
+            ws.update({w: v for w, v in pickle.load(open(CACHE / f"{m}.pkl", "rb")).items() if w not in REL_SKIP})
+        if (CACHE_NEW / f"{m}.pkl").is_file():
+            ws.update({w: v for w, v in pickle.load(open(CACHE_NEW / f"{m}.pkl", "rb")).items() if w[0] in new_rx})
+        windows[m] = ws
+    for v in variants:
+        t0 = time.time(); r2, r3, gen, nfull = [], [], 0, 0
+        for m in mols:
+            acc = {}
+            for win, w in windows[m].items():
+                nd = min(150, len(w["rows"]))
+                part = w["part"][:nd]
+                cand = list(np.argsort(-part, kind="stable")[: v["n_part"]]) + list(range(min(v["n_docrank"], nd)))
+                cand = [i for i in dict.fromkeys(cand) if np.isfinite(w["full"][i])]
+                nfull += len(cand)
+                if len(cand) < 3:
+                    continue
+                fv = np.array([w["full"][i] for i in cand]); fz = dict(zip(cand, (fv - fv.mean()) / (fv.std() + 1e-9)))
+                for i in sorted(cand, key=lambda i: -(fz[i] + 0.3 * w["doc"][i]))[:3]:
+                    for key, zp in prods(m, win, int(w["rows"][i]), w["smiles"][i]):
+                        a = acc.setdefault(key, dict(zp=zp, doc=0.0, routes=set()))
+                        a["doc"] = max(a["doc"], float(w["doc"][i])); a["routes"].add((int(w["rows"][i]),) + win)
+            gen += m in acc
+            pr = pd.DataFrame([dict(key=k, z_p=a["zp"], rel_doc=a["doc"] + (0.5 / 0.15) * np.log(len(a["routes"])), rel_z=0.0,
+                                    loss_ok=0.0) for k, a in acc.items()], columns=["key", "z_p", "rel_doc", "rel_z", "loss_ok"])
+            r2.append(rr(merge(lists[m][0], pr, 0.0, 0.15), m) - rr([k for k, _ in lists[m][0]], m))
+            r3.append(rr(merge(lists[m][1], pr, 0.0, 0.15), m))
+        h = [np.sum(r3[j::2]) / (N_PANEL / 2) for j in (0, 1)]
+        print(f"{str(v):40s} full scores per window {nfull / max(1, sum(len(w) for w in windows.values())):5.1f} | generated {gen:3d} | "
+              f"class-2 {np.sum(r2) / N_PANEL:+.4f} (hurt {sum(x < 0 for x in r2)}) | class-3 {np.sum(r3) / N_PANEL:.4f} "
+              f"(halves {h[0]:.3f} / {h[1]:.3f}) | {time.time() - t0:.0f}s", flush=True)
+
+
+if __name__ == "__main__" and sys.argv[1] == "selection":
+    evaluate_selection([dict(n_part=40, n_docrank=0), dict(n_part=30, n_docrank=10), dict(n_part=25, n_docrank=15),
+                        dict(n_part=20, n_docrank=20), dict(n_part=40, n_docrank=10), dict(n_part=40, n_docrank=20)])
