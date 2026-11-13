@@ -76,6 +76,17 @@ STRIP = {
     "malonyl": "[O:1]C(=O)CC(=O)O>>[O:1]",
 }
 GENUINE_LOSS = {"hexose", "deoxyhexose", "pentose", "glucuronide", "acetyl", "malonyl"}   # lost as neutrals in MS2
+# PubChem-relative search windows (task 2, experiments/relatives_cache.py windows/sets): these 7 rebuilt no panel answer
+# that another window did not, so they are not searched; four natural-product strip edits are searched on heavier
+# relatives instead. Panel, relatives only: class-3 0.186 -> 0.196 with 23 windows instead of 26, class-2 unchanged.
+REL_SKIP = {("malonyl", -1), ("malonyl", +1), ("prenyl(ar)", -1), ("prenyl(ar)", +1), ("glucuronide", +1),
+            ("pentose", -1), ("C-methyl(ar)", -1)}
+REL_EXTRA_STRIP = {
+    "sulfate": (79.95681, "[#6:2][O:1]S(=O)(=O)[OX2H1,OX1-]>>[#6:2][O:1]"),
+    "coumaroyl": (146.03678, "[#6:2][O:1]C(=O)C=Cc1ccc([OH])cc1>>[#6:2][O:1]"),
+    "caffeoyl": (162.03169, "[#6:2][O:1]C(=O)C=Cc1ccc([OH])c([OH])c1>>[#6:2][O:1]"),
+    "galloyl": (152.01096, "[#6:2][O:1]C(=O)c1cc([OH])c([OH])c([OH])c1>>[#6:2][O:1]"),
+}
 INPUT = Path("/kaggle/input")
 
 
@@ -171,6 +182,7 @@ class Chemistry:
         self.fwd = {k: (d, AllChem.ReactionFromSmarts(s)) for k, (d, s) in FORWARD.items()}
         self.rev = {k: (d, AllChem.ReactionFromSmarts(s)) for k, (d, s) in REVERSE.items()}
         self.strip = {k: (FORWARD[k][0], AllChem.ReactionFromSmarts(s)) for k, s in STRIP.items()}
+        self.rel_extra = {k: (d, AllChem.ReactionFromSmarts(s)) for k, (d, s) in REL_EXTRA_STRIP.items()}
         self.sel_e = np.flatnonzero(fp_bits < 4096); self.raw_e = fp_bits[self.sel_e]      # ECFP4 block of the bits
         self._key = {}
 
@@ -361,7 +373,9 @@ def relative_products(M: float, z: np.ndarray, mu: float, sd: float, tier: "Tier
     forward edit, heavier ones (M + d) the strip edit. Relatives: best-documented rows of each window, ECFP4 first
     pass, full fingerprint score (z, standardised on a window sample) + 0.3 doc. Returns (gate score, smiles, key)."""
     z_e = z[chem.sel_e]
-    jobs = [(e, d, -1, rx) for e, (d, rx) in chem.fwd.items()] + [(e, d, +1, rx) for e, (d, rx) in chem.strip.items()]
+    jobs = [(e, d, -1, rx) for e, (d, rx) in chem.fwd.items() if (e, -1) not in REL_SKIP] + \
+           [(e, d, +1, rx) for e, (d, rx) in chem.strip.items() if (e, +1) not in REL_SKIP] + \
+           [(e, d, +1, rx) for e, (d, rx) in chem.rel_extra.items()]
     acc = {}                                  # product key -> smiles, z, best relative doc, routes, loss bonus
     for e, d, sign, rx in jobs:
         lo, hi = tier.window(M + sign * d, p["window_ppm"])
