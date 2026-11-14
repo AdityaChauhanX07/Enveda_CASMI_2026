@@ -68,3 +68,19 @@ def tier_smiles(rows: np.ndarray) -> list[str]:
         r = rows[i]
         out[i] = bytes(buf[off[r]:off[r + 1]]).decode()
     return out
+
+
+def read_library(lib: str = "enveda-np-examples", columns=None) -> pd.DataFrame:
+    """Rows of one ingest library from train.parquet, row group by row group (a filtered read_table peaks at ~8 GB)."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+    from casmi.data import DATA
+    pf = pq.ParquetFile(DATA / "train.parquet")
+    parts = []
+    for g in range(pf.num_row_groups):
+        m = pc.equal(pf.read_row_group(g, columns=["ingest_lib"])["ingest_lib"], lib)
+        idx = np.flatnonzero(np.asarray(m.to_numpy(zero_copy_only=False), dtype=bool))
+        if len(idx):
+            parts.append(pf.read_row_group(g, columns=columns).take(pa.array(idx)))
+    return pa.concat_tables(parts).to_pandas()

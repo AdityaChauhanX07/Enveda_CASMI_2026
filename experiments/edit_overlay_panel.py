@@ -18,12 +18,12 @@ sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "experiments"))
 from casmi import edit_overlay  # noqa: E402
 from casmi.data import DATA  # noqa: E402
 from casmi.metric import ik14, score  # noqa: E402
-from casmi.panel import load_candidates, tier_smiles, zscore  # noqa: E402
+from casmi.panel import load_candidates, read_library, tier_smiles, zscore  # noqa: E402
 from network_panel import shortlist  # noqa: E402
 
 if __name__ == "__main__":
     art = ROOT / "artifacts"; art.mkdir(exist_ok=True)
-    t = pq.read_table(DATA / "train.parquet", filters=[("ingest_lib", "=", "enveda-np-examples")]).to_pandas()
+    t = read_library("enveda-np-examples")
     t["molecule_id"] = [ik14(x) for x in t.normalized_smiles]      # the panel's molecule id is the metric key
     t.to_parquet(art / "np_test.parquet")
     truth = t.drop_duplicates("molecule_id").set_index("molecule_id").normalized_smiles
@@ -52,6 +52,11 @@ if __name__ == "__main__":
     kw = dict(p={"device": "cpu", **extra}, v4={"chem": v4chem}, logits_fn=cached.get,
               fold_model=EXT / "foldsafe" / "fpnet_fold0.pt", tier_root=EXT / "pubchem_prior" / "casmi26-pubchem-tier",
               fp_bits=EXT / "foldsafe" / "fp_bits.npy")
+    # --library=tau:down:min_ref runs casmi/library_overlay.py on the lists before the edit overlay; --tag=x names the files
+    lib_arg = [a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--library=")]
+    lib_spec = (float(lib_arg[0].split(":")[0]), int(lib_arg[0].split(":")[1]), int(lib_arg[0].split(":")[2])) if lib_arg else None
+    tag_arg = [a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--tag=")]
+    tag_ = f"_{tag_arg[0]}" if tag_arg else ""
     mixed = [a for a in sys.argv[1:] if a.startswith("--mixed=")]
     runs = [(f"mixed seed {sd}", int(sd)) for sd in mixed[0].split("=")[1].split(",")] if mixed else \
         [("class-2 lists", None), ("class-3 simulation", -1)]
@@ -65,12 +70,22 @@ if __name__ == "__main__":
             cand = [s for s in lists.get(m, ["CCO"]) if not (m in dropped and ik14(s) == ik14(truth[m]))][:25] or ["CCO"]
             rows.append((m, ";".join(cand)))
         sub = pd.DataFrame(rows, columns=["molecule_id", "smiles"])
-        sub.to_csv(art / "np_sub.csv", index=False)
+        sub.to_csv(art / f"np_sub{tag_}.csv", index=False)
+        edit_in = art / f"np_sub{tag_}.csv"
+        if lib_spec:                             # library-consistency overlay first (the answer's own spectra hidden)
+            from casmi import library_overlay
+            tau, down, min_ref = lib_spec
+            lrep = library_overlay.apply(art / "np_test.parquet", edit_in, DATA / "train.parquet", art / f"np_sub_lib{tag_}.csv",
+                                         None, dict(tau=tau, down=down, min_ref=min_ref, hide_self=1))
+            lib_sub = pd.read_csv(art / f"np_sub_lib{tag_}.csv", dtype=str, keep_default_na=False)
+            print(f"{name}: library overlay MRR {score(sol, sub):.4f} -> {score(sol, lib_sub):.4f} | "
+                  f"{ {k: lrep[k] for k in ('with_reference', 'flagged', 'molecules_changed', 'rank1_changed', 'errors', 'seconds')} }")
+            edit_in = art / f"np_sub_lib{tag_}.csv"
         if extra.get("dump_state"):              # one state file per run: class-2 lists, class-3 lists or a mixed draw
             tag = "c2" if seed is None else ("c3" if seed == -1 else f"mix{seed}")
             kw = dict(kw, p=dict(kw["p"], dump_state=f"{extra['dump_state']}_{tag}.pkl"))
-        rep = edit_overlay.apply(art / "np_test.parquet", art / "np_sub.csv", art / "np_sub_edit.csv", None, **kw)
-        after = pd.read_csv(art / "np_sub_edit.csv", dtype=str, keep_default_na=False)
+        rep = edit_overlay.apply(art / "np_test.parquet", edit_in, art / f"np_sub_edit{tag_}.csv", None, **kw)
+        after = pd.read_csv(art / f"np_sub_edit{tag_}.csv", dtype=str, keep_default_na=False)
         if dropped and len(dropped) < len(sol):
             ds, ks = sol[sol.molecule_id.isin(dropped)], sol[~sol.molecule_id.isin(dropped)]
             print(f"  {name}: dropped 25 %: {score(ds, sub[sub.molecule_id.isin(dropped)]):.4f} -> "

@@ -1,7 +1,9 @@
-"""Edge-case harness for the two overlay cells: a deliberately awkward copy of the visible test and a submission with
-odd candidate lists, run through casmi/network_overlay.py and casmi/edit_overlay.py exactly as the cells do.
+"""Edge-case harness for the overlay cells: a deliberately awkward copy of the visible test and a submission with
+odd candidate lists, run through casmi/network_overlay.py, casmi/library_overlay.py and casmi/edit_overlay.py in the
+notebook's order, exactly as the cells do.
 
-usage: python experiments/edge_cases.py [--real]   (--real: the real FPNet models, needs torch; default random logits)
+usage: python experiments/edge_cases.py [--real] [--skip_edit]   (--real: the real FPNet models, needs torch; default
+random logits; --skip_edit: networking and library overlays only)
 """
 from __future__ import annotations
 
@@ -119,6 +121,20 @@ if __name__ == "__main__":
     rep_net = network_overlay.apply(OUT / "test.parquet", OUT / "sub.csv", OUT / "sub_net.csv", None)
     report["network"] = dict(rep_net, params=None, check=check(OUT / "sub_net.csv", ids), seconds=round(time.time() - t0, 1))
     print("NETWORK", report["network"], flush=True)
+    from casmi import library_overlay
+    tl = test.copy().reset_index(drop=True)           # two more cases only this overlay reads: no precursor, unseen adduct
+    lib_case = {"precursor_nan": ids[8], "unseen_adduct": ids[9]}
+    tl.loc[tl.molecule_id == lib_case["precursor_nan"], "precursor_mz"] = np.nan
+    tl.loc[tl.molecule_id == lib_case["unseen_adduct"], "adduct"] = "[M+X]+"
+    tl.to_parquet(OUT / "test_lib.parquet")
+    report["library_cases"] = lib_case
+    t0 = time.time()
+    rep_lib = library_overlay.apply(OUT / "test_lib.parquet", OUT / "sub_net.csv", data / "train.parquet", OUT / "sub_lib.csv", None)
+    report["library"] = dict(rep_lib, check=check(OUT / "sub_lib.csv", ids), seconds=round(time.time() - t0, 1))
+    print("LIBRARY", report["library"], flush=True)
+    if "--skip_edit" in sys.argv:
+        (OUT / "report.json").write_text(json.dumps(report, indent=1, default=str))
+        sys.exit(0)
     rng = np.random.default_rng(0)
     fake = {m: rng.normal(-1.6, 1.6, 10226) for m in ids}
     dev = "cpu"
@@ -128,9 +144,9 @@ if __name__ == "__main__":
     p = dict(device=dev, relatives=1, max_seconds=1500, rel_seconds=900)
     t0 = time.time()
     if real:
-        rep = edit_overlay.apply(OUT / "test.parquet", OUT / "sub_net.csv", OUT / "sub_edit.csv", None, p)
+        rep = edit_overlay.apply(OUT / "test.parquet", OUT / "sub_lib.csv", OUT / "sub_edit.csv", None, p)
     else:
-        rep = edit_overlay.apply(OUT / "test.parquet", OUT / "sub_net.csv", OUT / "sub_edit.csv", None, p, v4=v4,
+        rep = edit_overlay.apply(OUT / "test.parquet", OUT / "sub_lib.csv", OUT / "sub_edit.csv", None, p, v4=v4,
                                  logits_fn=fake.get, fold_model=ROOT.parents[0] / "casmi_data" / "ext" / "foldsafe" / "fpnet_fold0.pt",
                                  fp_bits=ROOT.parents[0] / "casmi_data" / "ext" / "foldsafe" / "fp_bits.npy", **kw)
     report["edit"] = dict({k: v for k, v in rep.items() if k != "params"}, check=check(OUT / "sub_edit.csv", ids),

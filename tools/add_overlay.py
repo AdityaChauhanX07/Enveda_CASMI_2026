@@ -1,6 +1,7 @@
 """Append the networking overlay as the last cell of a forked notebook.
 
-Usage: python tools/add_overlay.py IN.ipynb OUT.ipynb [lam] [--edit [--relatives [--docrank] [--k4]]]   (--edit also appends the edit generator)
+Usage: python tools/add_overlay.py IN.ipynb OUT.ipynb [lam] [--library[=tau:down:min_ref]] [--edit [--relatives [--docrank] [--k4]]]
+(--library appends the library-consistency overlay after networking; --edit also appends the edit generator)
 The cell runs after every layer of the fork, re-orders submission.csv in place and keeps the fork's file on any
 error. It is skipped in a fast commit (dummy answers).
 """
@@ -53,6 +54,45 @@ def build(src_nb: Path, out_nb: Path, params: dict) -> None:
 
 
 
+LIB_CELL = '''# ── Library-consistency overlay: candidates whose public reference spectra contradict the query move down ──
+import json, shutil, time, traceback
+from pathlib import Path as _P
+_LIB_SRC = {src!r}
+_LIB_PARAMS = {params!r}
+_fast = (not globals().get('PIPELINE_DONE', True)) and (not globals().get('IS_RERUN', False)) and globals().get('COMMIT_MODE') == 'fast'
+_left = 8.5 * 3600 - (time.time() - globals().get('NB_T0', time.time()))
+if _fast or _left < 1200:
+    print('LIBRARY OVERLAY: skipped', 'fast commit' if _fast else 'time guard')
+else:
+    _LIB_PARAMS.update(max_seconds=min(_LIB_PARAMS.get('max_seconds', 1200), _left - 900))
+    try:
+        _p = _P('/kaggle/working/p2s_code/library_overlay.py'); _p.parent.mkdir(parents=True, exist_ok=True)
+        _p.write_text(_LIB_SRC)
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location('library_overlay', _p); _lo = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_lo)
+        _sub = _P('/kaggle/working/submission.csv'); shutil.copy2(_sub, '/kaggle/working/submission_before_library.csv')
+        _rep = _lo.apply(COMP / 'test.parquet', _sub, COMP / 'train.parquet', '/kaggle/working/submission_library.csv',
+                         '/kaggle/working/library_report.json', _LIB_PARAMS)
+        _f = pd.read_csv('/kaggle/working/submission_library.csv', dtype=str, keep_default_na=False)
+        assert _f.molecule_id.tolist() == SAMPLE_IDS and _f.smiles.str.split(';').map(len).between(1, 25).all()
+        shutil.copy2('/kaggle/working/submission_library.csv', _sub)
+        print('LIBRARY OVERLAY:', json.dumps(_rep))
+    except Exception:
+        traceback.print_exc()
+        if _P('/kaggle/working/submission_before_library.csv').is_file():
+            shutil.copy2('/kaggle/working/submission_before_library.csv', '/kaggle/working/submission.csv')
+        print('LIBRARY OVERLAY: failed, previous answers kept')
+'''
+
+
+def add_library(nb_path: Path, params: dict | None = None) -> None:
+    nb = json.loads(nb_path.read_text())
+    text = LIB_CELL.format(src=(ROOT / "casmi" / "library_overlay.py").read_text(), params=dict(params or {}))
+    nb["cells"].append({"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [],
+                        "source": text.splitlines(keepends=True)})
+    nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1))
+
+
 EDIT_CELL = '''# ── Neighbour-edit generator: one-modification products of spectral neighbours' candidates, gated by the fold-safe FPNet ──
 import json, shutil, time, traceback
 from pathlib import Path as _P
@@ -102,6 +142,13 @@ if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     lam = float(args[2]) if len(args) > 2 else 4.0
     build(Path(args[0]), Path(args[1]), {"lam": lam})
+    lib = [a for a in sys.argv[1:] if a == "--library" or a.startswith("--library=")]
+    if lib:                                    # a8: before the edit overlay, so products are compared with the re-ranked top 3
+        spec = lib[0].split("=", 1)[1].split(":") if "=" in lib[0] else []
+        lp = {}
+        if spec:
+            lp = dict(tau=float(spec[0]), down=int(spec[1]), min_ref=int(spec[2]))
+        add_library(Path(args[1]), lp)
     if "--edit" in sys.argv:
         # --relatives also turns on the PubChem-relative products. Budget: 60 min for the relative search (task 4,
         # experiments/search_order.py: weakest lists first keeps 88 % of the full-coverage gain at 50 % coverage,
