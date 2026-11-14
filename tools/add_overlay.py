@@ -65,8 +65,9 @@ if _fast or _left < 600:
 else:
     _EDIT_PARAMS.update(max_seconds=min(_EDIT_PARAMS.get('max_seconds', 3600), _left - 300),
                         rel_seconds=min(_EDIT_PARAMS.get('rel_seconds', 2400), _left - 900))
-    if not globals().get('IS_RERUN', False):      # commit runs only validate the code path (most lists are placeholders)
-        _EDIT_PARAMS.update(max_seconds=min(_EDIT_PARAMS['max_seconds'], 900), rel_seconds=min(_EDIT_PARAMS['rel_seconds'], 300))
+    if not globals().get('IS_RERUN', False):      # commit runs only validate the code path (most lists are placeholders);
+        # the first pass takes ~5 min on the GPU machine, so the relative search gets ~10 min of its own here
+        _EDIT_PARAMS.update(max_seconds=min(_EDIT_PARAMS['max_seconds'], 1500), rel_seconds=min(_EDIT_PARAMS['rel_seconds'], 900))
     try:
         _p = _P('/kaggle/working/p2s_code/edit_overlay.py'); _p.parent.mkdir(parents=True, exist_ok=True)
         _p.write_text(_EDIT_SRC)
