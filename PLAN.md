@@ -39,10 +39,10 @@ fully scored per window; panel net +0.0182 / +0.0549 at 10 / 25 % class 3, class
 b6 = Fork B + the same; hardened against odd inputs (per-molecule isolation, edge-case harness clean locally and on
 Kaggle with the real models). Relative search budget 60 min in the scoring run (~75 % coverage). a7 / b7 = a6 / b6 +
 four relatives kept per window (panel: class-3 lists 0.258, net +0.0198 / +0.0596 at 10 / 25 % class 3, same time).
-The user approved a7/b7 for Saturday; a scheduled check-in at 00:10 UTC Sat (after the quota reset) smoke-tests and
-submits both.
+a7 submitted 2026-11-14 (58329908, smoke run clean); b7 follows once the a7 scoring run finishes. One CASMI GPU
+job at a time, because another competition on the same account needs the second batch-GPU slot this week.
 
-**Next.** (1) Saturday after the quota reset: submit a5. (2) Generator recall/ranking (more relatives, NP acyl and
+**Next.** (1) Score a7, then smoke-test and submit b7. (2) Generator recall/ranking (more relatives, NP acyl and
 sulfate edits, 2-step edits), validated on the panel. (3) Look for a class-2 lever beyond the shared stack.
 
 ## 1. Verified facts
