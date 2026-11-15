@@ -39,10 +39,13 @@ fully scored per window; panel net +0.0182 / +0.0549 at 10 / 25 % class 3, class
 b6 = Fork B + the same; hardened against odd inputs (per-molecule isolation, edge-case harness clean locally and on
 Kaggle with the real models). Relative search budget 60 min in the scoring run (~75 % coverage). a7 / b7 = a6 / b6 +
 four relatives kept per window (panel: class-3 lists 0.258, net +0.0198 / +0.0596 at 10 / 25 % class 3, same time).
-a7 submitted 2026-11-14 (58329908, smoke run clean); b7 follows once the a7 scoring run finishes. One CASMI GPU
-job at a time, because another competition on the same account needs the second batch-GPU slot this week.
+**a7 scored 0.412** (Fork A + networking 0.486): the edit overlay inserts generated products above correct leaders
+that are less documented than the panel's answers (`experiments/lowdoc_leader.py`: doc <= 6 reproduces the -0.074).
+Edit overlay dropped; b7 and a8 not run. **a8n** = Fork A + networking + library-consistency overlay (no added
+candidates, no documentation term; panel class-2 lists +0.030, 0.8 % of class-1 answers flagged) is the next A/B
+against a3. One CASMI GPU job at a time (another competition on the account needs the second slot).
 
-**Next.** (1) Score a7, then smoke-test and submit b7. (2) Generator recall/ranking (more relatives, NP acyl and
+**Next.** (1) Smoke-test and submit a8n; compare with a3 (0.486). (2) Generator recall/ranking (more relatives, NP acyl and
 sulfate edits, 2-step edits), validated on the panel. (3) Look for a class-2 lever beyond the shared stack.
 
 ## 1. Verified facts

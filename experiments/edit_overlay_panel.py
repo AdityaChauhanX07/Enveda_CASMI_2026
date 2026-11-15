@@ -60,6 +60,9 @@ if __name__ == "__main__":
     mixed = [a for a in sys.argv[1:] if a.startswith("--mixed=")]
     runs = [(f"mixed seed {sd}", int(sd)) for sd in mixed[0].split("=")[1].split(",")] if mixed else \
         [("class-2 lists", None), ("class-3 simulation", -1)]
+    only = [a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--only=")]     # --only=c2 or --only=c3
+    if only:
+        runs = [r for r in runs if (r[1] is None) == (only[0] == "c2") and (r[1] == -1) == (only[0] == "c3")]
     for name, seed in runs:
         rng = np.random.default_rng(seed if seed is not None and seed >= 0 else 0)
         dropped = set(sol.molecule_id) if seed == -1 else set()
