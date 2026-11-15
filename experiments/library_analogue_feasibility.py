@@ -51,6 +51,37 @@ def modcos(a, b, tol=0.01):
     return float(min(1.0, tot)), n
 
 
+_W = {}
+
+
+def _init():
+    chem = Chemistry(np.load(EXT / "foldsafe" / "fp_bits.npy"))
+    _W["chem"] = chem
+    _W["rules"] = [("+" + e, rx) for e, (_, rx) in chem.fwd.items()] + [("-" + e, rx) for e, (_, rx) in chem.strip.items()] + \
+                  [("-" + e, rx) for e, (_, rx) in chem.rel_extra.items()]
+
+
+def _relatives(task):
+    """One-edit relatives of one candidate as standard InChIKey14 (the library's key; no tautomer step)."""
+    m, i, s = task
+    Chem = _W["chem"].Chem
+    mol = Chem.MolFromSmiles(s)
+    out = {}
+    if mol is None:
+        return (m, i), out
+    for name, rx in _W["rules"]:
+        for ps in rx.RunReactants((mol,), maxProducts=50):
+            q = ps[0]
+            try:
+                Chem.SanitizeMol(q)
+                k = Chem.MolToInchiKey(q)[:14]
+            except Exception:
+                continue
+            if k:
+                out.setdefault(k, name)
+    return (m, i), out
+
+
 if __name__ == "__main__":
     t0 = time.time()
     art, sol, sub = panel_lists()
@@ -60,16 +91,10 @@ if __name__ == "__main__":
     rules = [("+" + e, rx) for e, (_, rx) in chem.fwd.items()] + [("-" + e, rx) for e, (_, rx) in chem.strip.items()] + \
             [("-" + e, rx) for e, (_, rx) in chem.rel_extra.items()]
     lists = {m: s.split(";")[:TOP] for m, s in zip(sub.molecule_id, sub.smiles)}
-    rel = {}                                         # (molecule, position) -> {relative std key: edit}
-    for m, cand in lists.items():
-        for i, s in enumerate(cand):
-            out = {}
-            for name, rx in rules:
-                for k, ps in chem.products(s, rx, cap=50).items():
-                    sk = std(ps)
-                    if sk:
-                        out.setdefault(sk, name)
-            rel[(m, i)] = out
+    from multiprocessing import Pool
+    work = [(m, i, s) for m, cand in lists.items() for i, s in enumerate(cand)]
+    with Pool(4, initializer=_init) as pool:          # (molecule, position) -> {relative std key: edit}
+        rel = dict(pool.map(_relatives, work, chunksize=20))
     print(f"relatives generated in {time.time() - t0:.0f} s; mean per candidate {np.mean([len(v) for v in rel.values()]):.1f}")
     # query spectra with precursor (np-examples rows of each molecule)
     t = pd.read_parquet(art / "np_test.parquet", columns=["molecule_id", "adduct", "precursor_mz", "ms2_mzs", "ms2_normalized_intensities"])
