@@ -1,6 +1,6 @@
 """Append the networking overlay as the last cell of a forked notebook.
 
-Usage: python tools/add_overlay.py IN.ipynb OUT.ipynb [lam] [--library[=tau:down:min_ref]] [--edit [--relatives [--docrank] [--k4]]]
+Usage: python tools/add_overlay.py IN.ipynb OUT.ipynb [lam] [--library[=tau:down:min_ref]] [--edit [--relatives [--docrank] [--k4] [--safe]]]
 (--library appends the library-consistency overlay after networking; --edit also appends the edit generator)
 The cell runs after every layer of the fork, re-orders submission.csv in place and keeps the fork's file on any
 error. It is skipped in a fast commit (dummy answers).
@@ -158,5 +158,7 @@ if __name__ == "__main__":
             params.update(rel_n_full=20, rel_n_docrank=20)
         if "--k4" in sys.argv:                 # a7: four relatives kept per window (panel: class-3 0.238 -> 0.258, same time)
             params.update(rel_k=4)
+        if "--safe" in sys.argv:               # a9: never above rank 2, one product per list (a7 lost 0.074 on the LB by
+            params.update(min_slot=1, max_insert=1)   # displacing correct, poorly documented leaders)
         add_edit(Path(args[1]), params)
     print("written", args[1])

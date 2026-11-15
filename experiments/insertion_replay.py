@@ -44,6 +44,7 @@ def insert(st: dict, rule: dict, max_rank: int = 3, max_insert: int = 3) -> list
                 r = 1
         if meta["src"] == "nb" and "nb_min_slot" in rule:
             r = max(r, rule["nb_min_slot"])
+        r = max(r, rule.get("min_slot", 0))                  # never above this rank (the module's p["min_slot"])
         if r < max_rank:
             slots.setdefault(r, []).append(key)
     if not slots:
