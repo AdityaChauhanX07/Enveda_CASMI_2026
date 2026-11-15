@@ -45,7 +45,7 @@ Edit overlay dropped; b7 and a8 not run. **a8n** = Fork A + networking + library
 candidates, no documentation term; panel class-2 lists +0.030, 0.8 % of class-1 answers flagged) is the next A/B
 against a3. One CASMI GPU job at a time (another competition on the account needs the second slot).
 
-**Next.** (1) Smoke-test and submit a8n; compare with a3 (0.486). (2) Generator recall/ranking (more relatives, NP acyl and
+**Next.** (1) Score a8n (58362599, smoke run clean); compare with a3 (0.486). (2) Generator recall/ranking (more relatives, NP acyl and
 sulfate edits, 2-step edits), validated on the panel. (3) Look for a class-2 lever beyond the shared stack.
 
 ## 1. Verified facts
