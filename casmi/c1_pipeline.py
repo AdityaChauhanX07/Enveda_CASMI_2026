@@ -63,6 +63,8 @@ PARAMS = dict(ppm=10.0, w_doc=0.25, max_window=20000, n_partial=2000, n_docpre=4
               # optional natural-product likeness (Ertl et al. 2008; RDKit Contrib NP_Score, public model): + npl_eta x
               # the candidate's NP-likeness (panel: answers 1.29 on average, other candidates -0.07). Off unless > 0
               npl_eta=0.0,
+              # lib_first T (0 = off): library hits with cosine >= T lead the list, best first, ahead of every score
+              lib_first=0.0,
               # panel only: the answer's documentation capped at stress_cap inside the window stage (stress_ik:
               # molecule -> the answer's standard InChIKey first block), the a7 lesson applied to every cut
               stress_ik=None, stress_cap=None)
@@ -684,7 +686,17 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
             report["frag_error"] = f"{type(e).__name__}: {str(e)[:150]}"
     rows_out = []
     for m in ids:
-        final = [s_ for _, (v, s_) in sorted(scs.get(m, {}).items(), key=lambda x: -x[1][0])][: p["top_k"]]
+        ranked = [(k, s_) for k, (v, s_) in sorted(scs.get(m, {}).items(), key=lambda x: -x[1][0])]
+        if p["lib_first"] > 0 and m in hits:      # strong library matches first, best cosine first
+            lead, seen = [], set()
+            for c, s_ in sorted(hits[m].values(), key=lambda x: -x[0]):
+                k = chem.key(s_) if c >= p["lib_first"] else None
+                if k and k not in seen:
+                    seen.add(k); lead.append((k, s_))
+            if lead:
+                report["lib_first_lists"] = report.get("lib_first_lists", 0) + 1
+            ranked = lead + [(k, s_) for k, s_ in ranked if k not in seen]
+        final = [s_ for _, s_ in ranked][: p["top_k"]]
         rows_out.append((m, ";".join(final) if final else sample_fill))
     if p["neural_bundle"] and p["san_gamma"] <= 0:   # rank-level re-rank of the top 25 (C1n) unless fused above
         rows_out = neural_rerank(rows_out, test, p, report)
