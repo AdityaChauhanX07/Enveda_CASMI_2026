@@ -65,6 +65,8 @@ PARAMS = dict(ppm=10.0, w_doc=0.25, max_window=20000, n_partial=2000, n_docpre=4
               npl_eta=0.0,
               # lib_first T (0 = off): library hits with cosine >= T lead the list, best first, ahead of every score
               lib_first=0.0,
+              # short_n: how many best-scoring rows of each window enter the shortlist (beside the np_keep members)
+              short_n=100,
               # panel only: the answer's documentation capped at stress_cap inside the window stage (stress_ik:
               # molecule -> the answer's standard InChIKey first block), the a7 lesson applied to every cut
               stress_ik=None, stress_cap=None)
@@ -205,7 +207,7 @@ def _score_window(task):
         zs = (sc - ref.mean()) / (ref.std() + 1e-9)
         total = np.where(np.isfinite(sc), zs + p["w_doc"] * doc[sel], -np.inf)
         ranked = np.argsort(-total, kind="stable")
-        order = ranked[: 4 * p["top_k"]].tolist()
+        order = ranked[: p["short_n"]].tolist()
         if mem is not None:                            # the np_keep best members join the shortlist
             top = set(order)
             order += [int(i) for i in ranked if mem[sel[i]] and int(i) not in top][: p["np_keep"]]
