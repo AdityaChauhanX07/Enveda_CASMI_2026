@@ -11,7 +11,7 @@ Panel class 2 (the answer's spectra hidden from the library search); cached five
 candidates (as experiments/c1_panel.py); no spec2mol (its saved scores cover only the earlier shortlists).
 
 usage: c1_window_lowdoc.py NATURAL_PRODUCTS_PARQUET COCONUT_CSV [--caps=none,4,0] [--beta=3] [--w_doc=0.25] [--window_only=1]
-       [--coconut_extra=1] [--lib_beta=4] [--frag=LAMBDA:TOL] [--npl=ETA] [--view=c1]
+       [--coconut_extra=1] [--lib_beta=4] [--frag=LAMBDA:TOL] [--npl=ETA] [--view=c1] [--lib_first=T]
 (--view=c1: the class-1 view - only the queries' own library left out of the library search, nothing hidden)
 """
 from __future__ import annotations
@@ -53,6 +53,8 @@ if __name__ == "__main__":
     c1_pipeline.library_hits = lambda test, train_path, p, hide=None: hit_memo.setdefault("h", hits0(test, train_path, p, hide))
     base = dict(np_table=sys.argv[1], np_coconut=sys.argv[2], np_beta=beta, stress_ik=std, w_doc=w_doc,
                 np_coconut_extra=int(args.get("coconut_extra", 0)), lib_beta=float(args.get("lib_beta", 4.0)))
+    if "lib_first" in args:
+        base.update(lib_first=float(args["lib_first"]))
     if "npl" in args:
         base.update(npl_eta=float(args["npl"]))
     if "frag" in args:
