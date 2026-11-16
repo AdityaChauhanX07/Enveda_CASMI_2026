@@ -574,7 +574,18 @@ def support_pass(order: list, state: dict, spectra: dict, chem: "Chemistry", p: 
     report["supported_products"] = sum(v >= p["sup_sigma"] for st in state.values() for v in st.get("support", {}).values())
 
 
+def _one_thread(store: dict) -> None:
+    """Worker processes: one BLAS / OpenMP thread each. Forked workers otherwise each keep numpy's thread pool and
+    four workers on four cores ran ~5x slower (measured in the compliant pipeline's window scoring)."""
+    try:
+        from threadpoolctl import threadpool_limits
+        store["_threads"] = threadpool_limits(1)
+    except Exception:
+        pass
+
+
 def _rel_init(tier_root, doc_root, bits, p):
+    _one_thread(_RW)
     _RW.update(chem=Chemistry(bits), tier=Tier(Path(tier_root), Path(doc_root)), p=p)
 
 

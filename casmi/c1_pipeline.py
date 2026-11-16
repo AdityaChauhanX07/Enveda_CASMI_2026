@@ -33,8 +33,19 @@ PARAMS = dict(ppm=10.0, w_doc=0.25, max_window=20000, n_partial=2000, n_docpre=4
 _W = {}
 
 
+def _one_thread(store: dict) -> None:
+    """Worker processes: one BLAS / OpenMP thread each. Forked workers otherwise each keep numpy's thread pool and
+    four workers on four cores ran ~5x slower (37 vs 7 s per molecule in C1's window scoring)."""
+    try:
+        from threadpoolctl import threadpool_limits
+        store["_threads"] = threadpool_limits(1)
+    except Exception:
+        pass
+
+
 def _init_worker(index_root, doc_root, bits_path):
     import edit_overlay as eo
+    _one_thread(_W)
     _W["tier"] = eo.Tier(Path(index_root), Path(doc_root))
     _W["chem"] = eo.Chemistry(np.load(bits_path))
 
