@@ -50,6 +50,10 @@ PARAMS = dict(ppm=10.0, w_doc=0.25, max_window=20000, n_partial=2000, n_docpre=4
               # of 459 k in range are not in our index) join it as candidates without documentation (class 2 is "in
               # PubChem or COCONUT"); needs np_coconut
               np_coconut_extra=0,
+              # optional fragment explanation (casmi/fragments.py, no trained parameters): + frag_lambda x the share
+              # of each spectrum's frag_top peaks its bond-cleavage fragments explain within frag_tol Da (mean over
+              # the molecule's spectra), over the pooled within-shortlist sd. Off unless frag_lambda > 0
+              frag_lambda=0.0, frag_tol=0.01, frag_h=2, frag_top=30, frag_workers=4,
               # panel only: the answer's documentation capped at stress_cap inside the window stage (stress_ik:
               # molecule -> the answer's standard InChIKey first block), the a7 lesson applied to every cut
               stress_ik=None, stress_cap=None)
@@ -332,6 +336,44 @@ def s2m_fuse(sc: dict, v: np.ndarray, gamma: float, scale: float) -> dict:
     return {k: (val + gamma * float(a), s_) for (k, (val, s_)), a in zip(sc.items(), zz)}
 
 
+def _frag_task(task):
+    """(molecule, [explained share per candidate]) for one shortlist."""
+    try:                                          # notebook: modules side by side; repository: the casmi package
+        from fragments import Fragmenter, explained, peaks
+    except ImportError:
+        from casmi.fragments import Fragmenter, explained, peaks
+    m, smiles, specs, tol, h_shift, top_n = task
+    frag = Fragmenter(h_shift=h_shift)
+    pk = [(mode,) + peaks(mz, it, pm, top_n) for mode, mz, it, pm in specs]
+    pk = [x for x in pk if len(x[1])]
+    out = []
+    for s_ in smiles:
+        try:
+            out.append(float(np.mean([explained(frag.ion_masses(s_, mode), mz, w, tol) for mode, mz, w in pk])) if pk else np.nan)
+        except Exception:
+            out.append(np.nan)
+    return m, out
+
+
+def frag_shares(scs: dict, test: pd.DataFrame, p: dict) -> dict:
+    """molecule -> explained shares in the order of scs[molecule] (NaN where a candidate could not be fragmented)."""
+    by_mol = {str(m): g for m, g in test.groupby("molecule_id", sort=False)}
+    tasks = []
+    for m, sc in scs.items():
+        g = by_mol.get(m)
+        if g is None or len(sc) < 2:
+            continue
+        specs = [(str(r.ionization_mode), r.ms2_mzs, r.ms2_normalized_intensities, float(r.precursor_mz)) for r in g.itertuples(index=False)
+                 if r.ms2_mzs is not None and r.ms2_normalized_intensities is not None]
+        tasks.append((m, [s_ for _, s_ in sc.values()], specs, p["frag_tol"], p["frag_h"], p["frag_top"]))
+    import multiprocessing as mp
+    try:
+        with mp.get_context("fork").Pool(p["frag_workers"], initializer=_one_thread, initargs=({},)) as pool:
+            return dict(pool.map(_frag_task, tasks, chunksize=2))
+    except Exception:
+        return dict(_frag_task(t) for t in tasks)
+
+
 def neural_rerank(rows_out: list, test: pd.DataFrame, p: dict, report: dict) -> list:
     """Re-order each list's first neural_top candidates by reciprocal-rank fusion with the neural scorer."""
     import sys as _sys
@@ -548,6 +590,21 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
                         sc[k] = (sc[k][0] + add, sc[k][1]); report["np_members"] += 1
         except Exception as e:                 # without the tables the lists stay as they are
             report["np_error"] = f"{type(e).__name__}: {str(e)[:150]}"
+    if p["frag_lambda"] > 0:                     # fragment explanation over each whole shortlist
+        try:
+            fs = frag_shares(scs, test, p)
+            sds = [float(np.nanstd(v)) for v in fs.values() if np.isfinite(v).sum() >= 5]
+            fsd = float(np.median(sds)) if len(sds) >= 20 else 0.13
+            report["frag_sd"], report["frag_molecules"] = round(fsd, 4), len(fs)
+            for m, v in fs.items():
+                v = np.asarray(v, float)
+                if np.isfinite(v).sum() < 2:
+                    continue
+                v = np.where(np.isfinite(v), v, np.nanmin(v))
+                scs[m] = {k: (val + p["frag_lambda"] * float(a) / (fsd + 1e-9), s_) for (k, (val, s_)), a in zip(scs[m].items(), v)}
+            report["frag_seconds"] = round(time.time() - t0, 1)
+        except Exception as e:                 # without fragments the lists stay as they are
+            report["frag_error"] = f"{type(e).__name__}: {str(e)[:150]}"
     rows_out = []
     for m in ids:
         final = [s_ for _, (v, s_) in sorted(scs.get(m, {}).items(), key=lambda x: -x[1][0])][: p["top_k"]]

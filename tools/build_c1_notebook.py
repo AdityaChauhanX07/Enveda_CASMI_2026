@@ -13,7 +13,7 @@ usage: python tools/build_c1_notebook.py OUT_DIR [--edit [--support-gate | --sup
  --npw: also a natural-product-aware window stage (members never lost to documentation cuts): casmi26-c1snpw-compliant;
  --wdoc=W: documentation weight W (default 0.25; 0 with --s2m --np --npw: casmi26-c1d-compliant-docfree); --beta=B: bonus B;
  --coco: COCONUT structures missing from the PubChem windows join them; --libbeta=L: library-hit weight L (default 4);
- --slug=NAME: kernel name override)
+ --frag=L[:TOL]: fragment explanation at weight L (match tolerance TOL Da, default 0.01); --slug=NAME: kernel name override)
 """
 from __future__ import annotations
 
@@ -115,9 +115,9 @@ def cell(kind: str, text: str) -> dict:
 
 def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = False, np_prior: bool = False,
           np_window: bool = False, w_doc: float | None = None, beta: float | None = None, coco: bool = False,
-          lib_beta: float | None = None, slug: str | None = None) -> Path:
+          lib_beta: float | None = None, slug: str | None = None, frag: str | None = None) -> Path:
     modules = {f"v4/{n}.py": (V4 / f"{n}.py").read_text() for n in ("chem", "spectra", "fpnet")}
-    for n in ("edit_overlay", "c1_pipeline"):
+    for n in ("edit_overlay", "c1_pipeline", "fragments"):
         modules[f"{n}.py"] = (ROOT / "casmi" / f"{n}.py").read_text()
     extra = ("- **spec2mol** (`casmi26-spec2mol`, training code `train.py` / `prep.py` in the dataset): spectra and\n"
              "  fingerprints in one embedding space; its score joins each whole shortlist at weight "
@@ -136,6 +136,11 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
         extra += f"- **Library-hit weight:** {lib_beta} x (cosine - 0.8) (default 4).\n"
     run_extra = "".join(f", {k}={v!r}" for k, v in (("w_doc", w_doc), ("lib_beta", lib_beta)) if v is not None)
     run_extra += ", np_coconut_extra=1" if (coco and np_prior) else ""
+    if frag:
+        lam, _, tol = frag.partition(":")
+        run_extra += f", frag_lambda={float(lam)!r}" + (f", frag_tol={float(tol)!r}" if tol else "")
+        extra += (f"- **Fragment explanation:** each candidate's bond-cleavage fragments (one or two cuts, ring openings) are "
+                  f"matched to the spectrum's top peaks; the explained share joins the score at weight {float(lam)}.\n")
     credit = " and spec2mol" if s2m else ""
     credit += ("; COCONUT (Chandrasekhar et al., NAR 2025; CC0), the LOTUS initiative (Rutz et al., eLife 2022) and NPAtlas "
                "(van Santen et al., NAR 2022)" if np_prior else "")
@@ -187,4 +192,5 @@ if __name__ == "__main__":
                            beta=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--beta=")), None),
                            coco="--coco" in sys.argv,
                            lib_beta=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--libbeta=")), None),
-                           slug=next((a.split("=")[1] for a in sys.argv if a.startswith("--slug=")), None)))
+                           slug=next((a.split("=")[1] for a in sys.argv if a.startswith("--slug=")), None),
+                           frag=next((a.split("=")[1] for a in sys.argv if a.startswith("--frag=")), None)))

@@ -5,7 +5,7 @@ hits) is fragmented, and its explained share of each panel spectrum's top peaks 
 spectra (cached in artifacts/frag_scores_v1.json). Then C1e's ranking (w_doc 0, bonus 5 for members or hits, library-hit
 weight 12, spec2mol 0.75 pooled) is replayed with + lambda x explained share, and with lambda x share / pooled sd.
 
-usage: fragment_feature.py NATURAL_PRODUCTS_PARQUET COCONUT_CSV
+usage: fragment_feature.py NATURAL_PRODUCTS_PARQUET COCONUT_CSV [--tol=0.01] [--h_shift=2] [--top_n=30]
 """
 from __future__ import annotations
 
@@ -29,22 +29,25 @@ _JOB = {}
 
 
 def _score(m):
-    frag = Fragmenter()
+    frag = Fragmenter(h_shift=_JOB["h_shift"])
     specs, cands = _JOB["specs"][m], _JOB["cands"][m]
     out = {}
     for k, smi in cands.items():
         vals = []
         for mode, mz, w in specs:
-            vals.append(explained(frag.ion_masses(smi, mode), mz, w))
+            vals.append(explained(frag.ion_masses(smi, mode), mz, w, _JOB["tol"]))
         out[k] = float(np.mean(vals)) if vals else 0.0
     return m, out
 
 
 if __name__ == "__main__":
     art = ROOT / "artifacts"
+    args = dict(a[2:].split("=", 1) for a in sys.argv[3:] if a.startswith("--") and "=" in a)
+    tol, h_shift, top_n = float(args.get("tol", 0.01)), int(args.get("h_shift", 2)), int(args.get("top_n", 30))
     data = s2.split_rows(art)
     ids = data["ids"]
-    cache = art / "frag_scores_v1.json"
+    cache = art / ("frag_scores_v1.json" if (tol, h_shift, top_n) == (0.01, 2, 30) else f"frag_scores_t{tol}_h{h_shift}_n{top_n}.json")
+    print(f"tol {tol} Da, hydrogen shift +-{h_shift}, top {top_n} peaks")
     if cache.is_file():
         frag_scores = json.load(open(cache))
     else:
@@ -66,10 +69,10 @@ if __name__ == "__main__":
         test["m"] = [ik14(s_) for s_ in test.normalized_smiles]
         specs = {}
         for r in test.itertuples():
-            mz, w = peaks(r.ms2_mzs, r.ms2_normalized_intensities, r.precursor_mz)
+            mz, w = peaks(r.ms2_mzs, r.ms2_normalized_intensities, r.precursor_mz, top_n)
             if len(mz):
                 specs.setdefault(r.m, []).append((r.ionization_mode, mz, w))
-        _JOB.update(specs=specs, cands=cands)
+        _JOB.update(specs=specs, cands=cands, tol=tol, h_shift=h_shift)
         with mp.get_context("fork").Pool(4) as pool:
             frag_scores = dict(pool.map(_score, [m for m in ids if m in specs], chunksize=2))
         json.dump(frag_scores, open(cache, "w"))
