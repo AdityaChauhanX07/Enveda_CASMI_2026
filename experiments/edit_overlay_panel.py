@@ -49,6 +49,8 @@ if __name__ == "__main__":
         k, _, v = a[2:].partition("=")
         if a.startswith("--") and v and k in edit_overlay.PARAMS:
             extra[k] = type(edit_overlay.PARAMS[k])(float(v)) if isinstance(edit_overlay.PARAMS[k], (int, float)) else v
+    if extra.get("sup_beta", 0) > 0 or extra.get("sup_gate", 0):   # product support: answers' own spectra count as hidden
+        extra.update(sup_train=str(DATA / "train.parquet"), sup_hide=tuple(truth.index))
     kw = dict(p={"device": "cpu", **extra}, v4={"chem": v4chem}, logits_fn=cached.get,
               fold_model=EXT / "foldsafe" / "fpnet_fold0.pt", tier_root=EXT / "pubchem_prior" / "casmi26-pubchem-tier",
               fp_bits=EXT / "foldsafe" / "fp_bits.npy")

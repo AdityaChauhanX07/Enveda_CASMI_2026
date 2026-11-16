@@ -45,6 +45,14 @@ PARAMS = dict(cos_min=0.5, min_matches=4, top_neighbour=3, beta=3.0, w_doc=0.4, 
               # it). Panel (experiments/agreement_replay.py): class-3 0.185 -> 0.205 with class-2 unchanged (-0.0060);
               # a bonus of 0.5 / 1 / 2 costs class 2 -0.008 / -0.012 / -0.025, so the bonus stays 0
               rel_exclude_nb=0, agree_bonus=0.0,
+              # spectral support of products (opt-in, off by default): best modified cosine between a query spectrum and a
+              # same-adduct train.parquet spectrum of any one-edit relative of the product (>= sup_min_matches peaks), for
+              # the sup_top best products of each list. Panel (experiments/product_support.py, a9 guard): class-3 answers
+              # among the top-10 products reach >= 0.7 for 66 % vs 15 % of other products; sup_beta adds
+              # sup_beta * support (support >= sup_sigma) to a product's score, sup_gate=1 inserts only supported products.
+              # sup_train: path of train.parquet (empty = off); sup_hide: panel only, keys whose spectra count as hidden
+              sup_beta=0.0, sup_sigma=0.6, sup_gate=0, sup_top=10, sup_min_matches=3, sup_cap=50, sup_seconds=600,
+              sup_train="", sup_hide=(),
               dump_state="")               # offline analysis only: pickle every scored product before insertion
 FORWARD = {
     "O-methyl": (14.01565, "[OX2H1:1]>>[O:1]C"),
@@ -469,6 +477,103 @@ def merge_sources(scored: list, bonus: float) -> list:
 _RW = {}
 
 
+def _load_refs(train_path, keys: set, adducts: set, p: dict) -> dict:
+    """(key, adduct) -> [(precursor, mz, w)], at most sup_cap per pair; two passes over the row groups (the key and
+    adduct columns first, then only the wanted rows' spectra in small batches), so memory stays small."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+    refs, count = {}, {}
+    if not keys or not adducts:
+        return refs
+    pf = pq.ParquetFile(str(train_path))
+    kset, aset = pa.array(sorted(keys)), pa.array(sorted(adducts))
+    for g in range(pf.num_row_groups):
+        meta = pf.read_row_group(g, columns=["inchikey14", "adduct"])
+        mask = pc.and_(pc.is_in(meta["inchikey14"], value_set=kset), pc.is_in(meta["adduct"], value_set=aset))
+        idx = np.flatnonzero(np.asarray(mask.to_numpy(zero_copy_only=False), dtype=bool))
+        if not len(idx):
+            continue
+        ks = meta["inchikey14"].take(pa.array(idx)).to_pylist(); ad = meta["adduct"].take(pa.array(idx)).to_pylist()
+        want = {}
+        for i, k, a in zip(idx, ks, ad):
+            if count.get((k, a), 0) < p["sup_cap"]:
+                count[(k, a)] = count.get((k, a), 0) + 1; want[int(i)] = (k, a)
+        off = 0
+        for b in pf.iter_batches(batch_size=8192, row_groups=[g], columns=["precursor_mz", "ms2_mzs", "ms2_normalized_intensities"]):
+            rows = [i for i in range(off, off + b.num_rows) if i in want]
+            if rows:
+                d = b.take(pa.array([i - off for i in rows])).to_pydict()
+                for i, pm, mz, it in zip(rows, d["precursor_mz"], d["ms2_mzs"], d["ms2_normalized_intensities"]):
+                    if pm is None or mz is None or it is None:
+                        continue
+                    try:
+                        mz_, w_ = _prepare(mz, it, float(pm), p["top_n"], p["min_rel"])
+                    except Exception:
+                        continue
+                    if len(mz_):
+                        refs.setdefault(want[i], []).append((float(pm), mz_, w_))
+            off += b.num_rows
+    return refs
+
+
+def support_pass(order: list, state: dict, spectra: dict, chem: "Chemistry", p: dict, deadline: float, report: dict) -> None:
+    """state[b]["support"] = {product key: best modified cosine to a relative's reference spectrum} for the sup_top best
+    products of each list, weakest lists first until the deadline; products not scored count as unsupported."""
+    Chem = chem.Chem
+    rules = [rx for _, rx in chem.fwd.values()] + [rx for _, rx in chem.strip.values()] + [rx for _, rx in chem.rel_extra.values()]
+    hide = set(p.get("sup_hide") or ())
+    rel, queries = {}, {}
+    for b in order:
+        if time.time() > deadline:
+            report["support_stopped_early"] = True
+            break
+        try:
+            st = state[b]
+            items = st["scored"] if p["rel_exclude_nb"] else merge_sources(st["scored"], p["agree_bonus"])
+            q = {}
+            for x in spectra.get(b, []):
+                mz, w = _prepare(x["mz"], x["it"], x["prec"], p["top_n"], p["min_rel"])
+                if len(mz):
+                    q.setdefault(str(x["adduct"]), []).append((float(x["prec"]), mz, w))
+            if not q:
+                continue
+            queries[b] = q
+            for item in sorted(items, key=lambda x: -x[0])[: p["sup_top"]]:
+                m = Chem.MolFromSmiles(item[1])
+                if m is None:
+                    continue
+                ks = set()
+                for rx in rules:
+                    for ps in rx.RunReactants((m,), maxProducts=50):
+                        y = ps[0]
+                        try:
+                            Chem.SanitizeMol(y); ks.add(Chem.MolToInchiKey(y)[:14])
+                        except Exception:
+                            continue
+                rel[(b, item[2])] = ks - {""} - hide
+        except Exception as e:  # one odd molecule must not stop the overlay
+            _note_error(report, "support", b, e)
+    keys = set().union(*rel.values()) if rel else set()
+    refs = _load_refs(p["sup_train"], keys, {a for q in queries.values() for a in q}, p) if keys else {}
+    for (b, k), ks in rel.items():
+        try:
+            best = 0.0
+            for rk in ks:
+                for a, qs in queries[b].items():
+                    for r in refs.get((rk, a), ()):
+                        for q in qs:
+                            c, n = _modcos(q, r, p["tol"])
+                            if n >= p["sup_min_matches"] and c > best:
+                                best = c
+            state[b].setdefault("support", {})[k] = best
+        except Exception as e:
+            _note_error(report, "support", b, e)
+    report["support_products"] = len(rel)
+    report["support_ref_structures"] = len({k for k, _ in refs})
+    report["supported_products"] = sum(v >= p["sup_sigma"] for st in state.values() for v in st.get("support", {}).values())
+
+
 def _rel_init(tier_root, doc_root, bits, p):
     _RW.update(chem=Chemistry(bits), tier=Tier(Path(tier_root), Path(doc_root)), p=p)
 
@@ -623,14 +728,30 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
         order = sorted(state, key=lambda b: state[b]["top"][0] if state[b]["top"] else -np.inf)
         order = [b for b in order if not (state[b]["top"] and state[b]["top"][0] >= p["guard"])]
         relatives_pass(order, state, target, spectra, tier, chem, bits, p, t0 + p["rel_seconds"], report)
+    if (p["sup_beta"] > 0 or p["sup_gate"]) and p["sup_train"] and state:   # spectral support of the best products
+        try:
+            order = sorted(state, key=lambda b: state[b]["top"][0] if state[b]["top"] else -np.inf)
+            support_pass(order, state, spectra, chem, p, time.time() + p["sup_seconds"], report)
+        except Exception as e:          # without support the products keep their scores (gate: nothing is inserted)
+            _note_error(report, "support", "all", e)
     if p.get("dump_state"):
         import pickle
         with open(p["dump_state"], "wb") as fh:
             pickle.dump({b: dict(top=st["top"], cand_keys=st["cand_keys"], scored=[(x[0], x[2], x[3]) for x in st["scored"]],
-                                 smiles={x[2]: x[1] for x in st["scored"]}) for b, st in state.items()}, fh)
+                                 smiles={x[2]: x[1] for x in st["scored"]}, support=st.get("support", {}))
+                         for b, st in state.items()}, fh)
     for b, st in state.items():         # pass 3: insert the best products into the top max_rank slots
         try:
             items = st["scored"] if p["rel_exclude_nb"] else merge_sources(st["scored"], p["agree_bonus"])
+            if p["sup_beta"] > 0 or p["sup_gate"]:
+                sp, adj = st.get("support", {}), []
+                for x in items:
+                    v = sp.get(x[2], 0.0)
+                    v = v if v >= p["sup_sigma"] else 0.0
+                    if p["sup_gate"] and v <= 0.0:
+                        continue
+                    adj.append((x[0] + p["sup_beta"] * v,) + tuple(x[1:]))
+                items = adj
             top, scored, cand = st["top"], sorted(items, key=lambda x: -x[0]), lists[b]
             if not scored or (top and top[0] >= p["guard"]):
                 continue

@@ -1,6 +1,6 @@
 """Append the networking overlay as the last cell of a forked notebook.
 
-Usage: python tools/add_overlay.py IN.ipynb OUT.ipynb [lam] [--library[=tau:down:min_ref]] [--edit [--relatives [--docrank] [--k4] [--safe]]]
+Usage: python tools/add_overlay.py IN.ipynb OUT.ipynb [lam] [--library[=tau:down:min_ref]] [--edit [--relatives [--docrank] [--k4] [--safe] [--support-gate | --support-rerank]]]
 (--library appends the library-consistency overlay after networking; --edit also appends the edit generator)
 The cell runs after every layer of the fork, re-orders submission.csv in place and keeps the fork's file on any
 error. It is skipped in a fast commit (dummy answers).
@@ -108,6 +108,10 @@ else:
     if not globals().get('IS_RERUN', False):      # commit runs only validate the code path (most lists are placeholders);
         # the first pass takes ~5 min on the GPU machine, so the relative search gets ~10 min of its own here
         _EDIT_PARAMS.update(max_seconds=min(_EDIT_PARAMS['max_seconds'], 1500), rel_seconds=min(_EDIT_PARAMS['rel_seconds'], 900))
+    if _EDIT_PARAMS.get('sup_beta', 0) > 0 or _EDIT_PARAMS.get('sup_gate', 0):   # product support reads train.parquet
+        _EDIT_PARAMS.update(sup_train=str(COMP / 'train.parquet'),
+                            sup_seconds=max(0, min(_EDIT_PARAMS.get('sup_seconds', 600), _left - _EDIT_PARAMS['rel_seconds'] - 600,
+                                                   600 if globals().get('IS_RERUN', False) else 300)))
     try:
         _p = _P('/kaggle/working/p2s_code/edit_overlay.py'); _p.parent.mkdir(parents=True, exist_ok=True)
         _p.write_text(_EDIT_SRC)
@@ -160,5 +164,9 @@ if __name__ == "__main__":
             params.update(rel_k=4)
         if "--safe" in sys.argv:               # a9: never above rank 2, one product per list (a7 lost 0.074 on the LB by
             params.update(min_slot=1, max_insert=1)   # displacing correct, poorly documented leaders)
+        if "--support-gate" in sys.argv:       # insert only products whose relatives' spectra match the query (>= 0.6)
+            params.update(sup_gate=1, sup_sigma=0.6)
+        if "--support-rerank" in sys.argv:     # products ranked by score + 1.0 x support (>= 0.7)
+            params.update(sup_beta=1.0, sup_sigma=0.7)
         add_edit(Path(args[1]), params)
     print("written", args[1])
