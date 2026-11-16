@@ -45,7 +45,7 @@ Edit overlay dropped; b7 and a8 not run. **a8n** = Fork A + networking + library
 candidates, no documentation term; panel class-2 lists +0.030, 0.8 % of class-1 answers flagged) is the next A/B
 against a3. One CASMI GPU job at a time (another competition on the account needs the second slot).
 
-**Next.** (1) a8n scored 0.485 (a3 0.486): library overlay LB-neutral, panel-positive. a9 (+ guarded insertion) smoke run 2026-11-16, then submit. (2) If it holds: more reference spectra for
+**Next.** (1) a8n scored 0.485 (a3 0.486): library overlay LB-neutral, panel-positive. a9 (+ guarded insertion) submitted 2026-11-16 (58408401). (2) If it holds: more reference spectra for
 the library overlay (the fork's extlib / MassBank sets), tau 0.6. (3) Edit overlay only in a form that cannot displace
 the fork's leader on documentation alone, checked on the panel with the answers' documentation lowered
 (`experiments/lowdoc_leader.py`) before any GPU run. Panel lesson: its answers are far better documented than the
