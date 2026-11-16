@@ -14,7 +14,8 @@ usage: python tools/build_c1_notebook.py OUT_DIR [--edit [--support-gate | --sup
  --wdoc=W: documentation weight W (default 0.25; 0 with --s2m --np --npw: casmi26-c1d-compliant-docfree); --beta=B: bonus B;
  --coco: COCONUT structures missing from the PubChem windows join them; --libbeta=L: library-hit weight L (default 4);
  --frag=L[:TOL]: fragment explanation at weight L (match tolerance TOL Da, default 0.01); --slug=NAME: kernel name override;
- --library-only: probe kernel casmi26-c1lib-probe - lists of train.parquet library hits (cosine >= 0.5) only, no overlays)
+ --library-only: probe kernel casmi26-c1lib-probe - lists of train.parquet library hits (cosine >= 0.5) only, no overlays;
+ --san=G: sanpier's spectrum model fused at score level over each whole shortlist at weight G (pooled scale))
 """
 from __future__ import annotations
 
@@ -116,7 +117,8 @@ def cell(kind: str, text: str) -> dict:
 
 def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = False, np_prior: bool = False,
           np_window: bool = False, w_doc: float | None = None, beta: float | None = None, coco: bool = False,
-          lib_beta: float | None = None, slug: str | None = None, frag: str | None = None, library_only: bool = False) -> Path:
+          lib_beta: float | None = None, slug: str | None = None, frag: str | None = None, library_only: bool = False,
+          san: float | None = None) -> Path:
     modules = {f"v4/{n}.py": (V4 / f"{n}.py").read_text() for n in ("chem", "spectra", "fpnet")}
     for n in ("edit_overlay", "c1_pipeline", "fragments"):
         modules[f"{n}.py"] = (ROOT / "casmi" / f"{n}.py").read_text()
@@ -137,6 +139,10 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
         extra += f"- **Library-hit weight:** {lib_beta} x (cosine - 0.8) (default 4).\n"
     run_extra = "".join(f", {k}={v!r}" for k, v in (("w_doc", w_doc), ("lib_beta", lib_beta)) if v is not None)
     run_extra += ", np_coconut_extra=1" if (coco and np_prior) else ""
+    if san:
+        run_extra += f", san_gamma={float(san)!r}"
+        extra += (f"- **Spectrum model (sanpier/casmi-spectrum-model-v1, training code public):** its score joins each whole "
+                  f"shortlist at weight {float(san)} (pooled scale).\n")
     if library_only:
         run_extra += ", library_only=1, lib_hit=0.5"
         extra += "- **Probe:** lists hold only spectral-library hits (cosine >= 0.5, best first); no PubChem stage, no overlays.\n"
@@ -149,7 +155,7 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
     credit += ("; COCONUT (Chandrasekhar et al., NAR 2025; CC0), the LOTUS initiative (Rutz et al., eLife 2022) and NPAtlas "
                "(van Santen et al., NAR 2022)" if np_prior else "")
     intro = INTRO.format(s2m_line=extra, s2m_credit=credit)
-    cells = [cell("markdown", intro), cell("code", SETUP.format(modules=modules)), cell("code", RUN.format(neural=neural, s2m_gamma=S2M_GAMMA if s2m else 0.0, np_beta=nb_beta if np_prior else 0.0,
+    cells = [cell("markdown", intro), cell("code", SETUP.format(modules=modules)), cell("code", RUN.format(neural=bool(neural or san), s2m_gamma=S2M_GAMMA if s2m else 0.0, np_beta=nb_beta if np_prior else 0.0,
                                                                             np_window=int(np_prior and np_window),
                                                                             run_extra=run_extra))]
     if not library_only:
@@ -171,7 +177,7 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
     meta = {"id": f"adityachauhanx/{slug}", "title": slug.replace("-", " "), "code_file": path.name,
             "language": "python", "kernel_type": "notebook", "is_private": True, "enable_gpu": False, "enable_tpu": False,
             "enable_internet": False, "dataset_sources": ["dmitriigluzdov/casmi26-fold-safe-fpnet", "metric/rdkit-2026-3-3-wheel"]
-                                                         + (["sanpier/casmi-spectrum-model-v1"] if neural else [])
+                                                         + (["sanpier/casmi-spectrum-model-v1"] if (neural or san) else [])
                                                          # spec2mol (casmi26-spec2mol: train.py / prep.py inside); nothing
                                                          # else of this dataset is loaded
                                                          + (["dmitriigluzdov/casmi26-attributed-v4g-reproduction-assets"] if s2m else [])
@@ -199,4 +205,5 @@ if __name__ == "__main__":
                            lib_beta=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--libbeta=")), None),
                            slug=next((a.split("=")[1] for a in sys.argv if a.startswith("--slug=")), None),
                            frag=next((a.split("=")[1] for a in sys.argv if a.startswith("--frag=")), None),
-                           library_only="--library-only" in sys.argv))
+                           library_only="--library-only" in sys.argv,
+                           san=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--san=")), None)))

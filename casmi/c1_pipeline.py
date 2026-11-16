@@ -57,6 +57,9 @@ PARAMS = dict(ppm=10.0, w_doc=0.25, max_window=20000, n_partial=2000, n_docpre=4
               # library_only 1 (a probe): lists hold only train.parquet library hits (>= lib_hit, best cosine first),
               # no PubChem stage; its LB score is what the library search alone reaches
               library_only=0,
+              # optional score-level fusion of sanpier's spectrum model over each whole shortlist (neural_bundle's
+              # Scorer; trained on all of train.parquet, so not testable on the panel): + san_gamma x score / pooled sd
+              san_gamma=0.0,
               # panel only: the answer's documentation capped at stress_cap inside the window stage (stress_ik:
               # molecule -> the answer's standard InChIKey first block), the a7 lesson applied to every cut
               stress_ik=None, stress_cap=None)
@@ -610,6 +613,37 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
                         sc[k] = (sc[k][0] + add, sc[k][1]); report["np_members"] += 1
         except Exception as e:                 # without the tables the lists stay as they are
             report["np_error"] = f"{type(e).__name__}: {str(e)[:150]}"
+    if p["neural_bundle"] and p["san_gamma"] > 0:  # sanpier's model over each whole shortlist (score level)
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(p["neural_bundle"]))
+            from inference import Scorer
+            scorer = Scorer(p["neural_bundle"], device=p["device"])
+            by_mol = {str(m): g for m, g in test.groupby("molecule_id", sort=False)}
+            vs = {}
+            for m, sc in scs.items():
+                g = by_mol.get(m)
+                if g is None or len(sc) < 2:
+                    continue
+                try:
+                    spectra = []
+                    for r in g.itertuples(index=False):
+                        ce = np.atleast_1d(np.asarray(r.collision_energy_ev, dtype=float)) if r.collision_energy_ev is not None else np.zeros(0)
+                        spectra.append(dict(mzs=np.asarray(r.ms2_mzs, float), intensities=np.asarray(r.ms2_normalized_intensities, float),
+                                            precursor_mz=float(r.precursor_mz), adduct=str(r.adduct), ionization_mode=str(r.ionization_mode),
+                                            collision_energy=float(np.nanmean(ce)) if len(ce) and np.isfinite(ce).any() else None))
+                    vs[m] = np.asarray(scorer.score_candidates(spectra, [s_ for _, s_ in sc.values()]), dtype=np.float64)
+                except Exception as e:         # this molecule keeps its order
+                    report["errors"] += 1
+                    if len(report["error_samples"]) < 3:
+                        report["error_samples"].append(f"san {m}: {type(e).__name__}: {str(e)[:100]}")
+            scale = s2m_pooled_scale(vs, p["s2m_min_n"], 1.0)
+            report["san_scale"], report["san_molecules"] = round(scale, 4), len(vs)
+            for m, v in vs.items():
+                scs[m] = s2m_fuse(scs[m], np.where(np.isfinite(v), v, np.nan), p["san_gamma"], scale)
+            report["san_seconds"] = round(time.time() - t0, 1)
+        except Exception as e:                 # without the scorer the lists stay as they are
+            report["san_error"] = f"{type(e).__name__}: {str(e)[:150]}"
     if p["frag_lambda"] > 0:                     # fragment explanation over each whole shortlist
         try:
             fs = frag_shares(scs, test, p)
@@ -629,7 +663,7 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
     for m in ids:
         final = [s_ for _, (v, s_) in sorted(scs.get(m, {}).items(), key=lambda x: -x[1][0])][: p["top_k"]]
         rows_out.append((m, ";".join(final) if final else sample_fill))
-    if p["neural_bundle"]:
+    if p["neural_bundle"] and p["san_gamma"] <= 0:   # rank-level re-rank of the top 25 (C1n) unless fused above
         rows_out = neural_rerank(rows_out, test, p, report)
     out = pd.DataFrame(rows_out, columns=["molecule_id", "smiles"])
     assert out.molecule_id.tolist() == ids and out.smiles.str.split(";").map(len).between(1, 25).all()
