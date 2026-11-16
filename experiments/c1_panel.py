@@ -5,7 +5,7 @@ find it. Class-1 view: only the queries' own library (enveda-np-examples) is lef
 other libraries can produce a library hit. Logits: the cached five-model ensemble (as edit_overlay_panel.py
 --ensemble). Index: the shared tier until our own build lands (--index=DIR uses that one, docs in the same folder).
 
-usage: c1_panel.py [--w_doc=0.25] [--index=DIR] [--only=c2|c1] [--n=10]
+usage: c1_panel.py [--w_doc=0.25] [--lib_hit=0.75] [--any pipeline parameter] [--index=DIR] [--only=c2|c1] [--n=10]
 """
 from __future__ import annotations
 
@@ -46,7 +46,10 @@ if __name__ == "__main__":
         index_root = doc_root = Path(args["index"])
     else:
         index_root, doc_root = EXT / "pubchem_prior" / "casmi26-pubchem-tier", EXT / "pubchem_prior"
-    p = dict(w_doc=float(args.get("w_doc", 0.25)))
+    p = {}
+    for k, v in args.items():                         # any pipeline parameter: --name=value, cast to the default's type
+        if k in c1_pipeline.PARAMS and not isinstance(c1_pipeline.PARAMS[k], (tuple, list)):
+            p[k] = type(c1_pipeline.PARAMS[k])(float(v)) if isinstance(c1_pipeline.PARAMS[k], (int, float)) else v
     for name, extra, hide in (("class 2 (answer's spectra hidden)", {}, {m: {std[m]} for m in std}),
                               ("class-1 view (queries' own library left out)", {"exclude_libs": ("enveda-np-examples",)}, None)):
         if args.get("only") == "c2" and hide is None or args.get("only") == "c1" and hide is not None:
