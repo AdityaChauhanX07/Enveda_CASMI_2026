@@ -3,7 +3,7 @@
 Runs as a Kaggle CPU script with internet on (kernels/pubchem-index-build); its output replaces the shared
 `casmi26-pubchem-tier` (no public build code) in the compliant pipeline. Same layout as that tier, so
 casmi.edit_overlay.Tier and the panel tools read it unchanged:
-  pc_mass.npy   float64, sorted monoisotopic mass (150 - 1250 Da)
+  pc_mass.npy   float64, sorted monoisotopic mass (100 - 1250 Da)
   pc_off.npy    int64, N + 1 byte offsets into pc_smiles.npy
   pc_smiles.npy uint8, concatenated SMILES (PubChem's, one representative CID per InChIKey14)
   pc_ik14.npy   S14, InChIKey connectivity block
@@ -31,7 +31,7 @@ import os
 BASE = os.environ.get("PUBCHEM_BASE", "https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Extras/")   # file:// for tests
 OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/kaggle/working/pubchem_index")
 LIMIT = int(sys.argv[2]) if len(sys.argv) > 2 else 0          # > 0: read only this many rows per file (dry run)
-LO, HI = 150.0, 1250.0
+LO, HI = 100.0, 1250.0   # the hidden test reaches m/z 157 (neutral ~118-156 Da for Na / K / H adducts)
 ALLOWED = re.compile(r"^(?:(?:C|H|N|O|P|S|F|Cl|Br|I)\d*)+$")
 CHUNK = 2_000_000
 T0 = time.time()
