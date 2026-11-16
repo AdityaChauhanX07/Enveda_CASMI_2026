@@ -6,7 +6,8 @@ casmi26-fold-safe-fpnet, training code public); the host's RDKit wheel. The FPNe
 (Ahmed Berat Özer, Apache-2.0) and our modules are embedded in the notebook.
 Cells: setup -> C1 lists (casmi/c1_pipeline.py) -> networking -> library consistency -> guarded edit overlay.
 
-usage: python tools/build_c1_notebook.py OUT_DIR [--support-gate | --support-rerank]
+usage: python tools/build_c1_notebook.py OUT_DIR [--support-gate | --support-rerank] [--neural]
+(--neural: separate kernel casmi26-c1n-compliant-neural with sanpier's spectrum model fused at rank level)
 """
 from __future__ import annotations
 
@@ -68,9 +69,11 @@ print('C1 SETUP:', json.dumps(dict(comp=str(COMP), index=str(INDEX), foldsafe=st
 RUN = '''# ── C1 candidate lists: own PubChem index + fold-safe FPNets + documentation, library hits first ──
 _left = 8.5 * 3600 - (time.time() - NB_T0)
 try:
+    _nb = sorted(glob.glob(str(INPUT / '**/casmi_spectrum_model_v1/inference.py'), recursive=True), key=len) if {neural!r} else []
     _rep = c1_pipeline.run(COMP / 'test.parquet', COMP / 'train.parquet', INDEX, FOLDSAFE, W / 'v4',
                            '/kaggle/working/submission.csv', '/kaggle/working/c1_report.json',
-                           dict(device='cpu', workers=4, max_seconds=max(600, min(4 * 3600, _left - 3 * 3600))))
+                           dict(device='cpu', workers=4, max_seconds=max(600, min(4 * 3600, _left - 3 * 3600)),
+                                neural_bundle=str(Path(_nb[0]).parent) if _nb else ''))
     _f = pd.read_csv('/kaggle/working/submission.csv', dtype=str, keep_default_na=False)
     assert _f.molecule_id.tolist() == SAMPLE_IDS and _f.smiles.str.split(';').map(len).between(1, 25).all()
     print('C1:', json.dumps({{k: v for k, v in _rep.items() if k != 'params'}}))
@@ -88,11 +91,11 @@ def cell(kind: str, text: str) -> dict:
     return c
 
 
-def build(out_dir: Path, edit_params: dict) -> Path:
+def build(out_dir: Path, edit_params: dict, neural: bool = False) -> Path:
     modules = {f"v4/{n}.py": (V4 / f"{n}.py").read_text() for n in ("chem", "spectra", "fpnet")}
     for n in ("edit_overlay", "c1_pipeline"):
         modules[f"{n}.py"] = (ROOT / "casmi" / f"{n}.py").read_text()
-    cells = [cell("markdown", INTRO), cell("code", SETUP.format(modules=modules)), cell("code", RUN.format())]
+    cells = [cell("markdown", INTRO), cell("code", SETUP.format(modules=modules)), cell("code", RUN.format(neural=neural))]
     cells.append(cell("code", add_overlay.CELL.format(src=(ROOT / "casmi" / "network_overlay.py").read_text(), params={"lam": 4.0})))
     cells.append(cell("code", add_overlay.LIB_CELL.format(src=(ROOT / "casmi" / "library_overlay.py").read_text(),
                                                           params=dict(tau=0.5, down=3, min_ref=3))))
@@ -100,11 +103,13 @@ def build(out_dir: Path, edit_params: dict) -> Path:
     nb = {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
                                        "language_info": {"name": "python"}}, "nbformat": 4, "nbformat_minor": 5}
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "casmi26-c1-compliant.ipynb"
+    slug = "casmi26-c1n-compliant-neural" if neural else "casmi26-c1-compliant"
+    path = out_dir / f"{slug}.ipynb"
     path.write_text(json.dumps(nb, ensure_ascii=False, indent=1))
-    meta = {"id": "adityachauhanx/casmi26-c1-compliant", "title": "casmi26 c1 compliant", "code_file": path.name,
+    meta = {"id": f"adityachauhanx/{slug}", "title": slug.replace("-", " "), "code_file": path.name,
             "language": "python", "kernel_type": "notebook", "is_private": True, "enable_gpu": False, "enable_tpu": False,
-            "enable_internet": False, "dataset_sources": ["dmitriigluzdov/casmi26-fold-safe-fpnet", "metric/rdkit-2026-3-3-wheel"],
+            "enable_internet": False, "dataset_sources": ["dmitriigluzdov/casmi26-fold-safe-fpnet", "metric/rdkit-2026-3-3-wheel"]
+                                                         + (["sanpier/casmi-spectrum-model-v1"] if neural else []),
             "competition_sources": ["enveda-CASMI26-molecule-id-mass-spectra"],
             "kernel_sources": ["adityachauhanx/casmi26-pubchem-index-build"], "model_sources": []}
     (out_dir / "kernel-metadata.json").write_text(json.dumps(meta, indent=1))
@@ -118,4 +123,4 @@ if __name__ == "__main__":
         params.update(sup_gate=1, sup_sigma=0.6)
     if "--support-rerank" in sys.argv:
         params.update(sup_beta=1.0, sup_sigma=0.7)
-    print("written", build(Path(sys.argv[1]), params))
+    print("written", build(Path(sys.argv[1]), params, neural="--neural" in sys.argv))

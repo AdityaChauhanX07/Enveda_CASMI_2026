@@ -23,7 +23,11 @@ import pandas as pd
 
 PARAMS = dict(ppm=10.0, w_doc=0.25, max_window=20000, n_partial=2000, n_docpre=400, window_sample=200, seed=0,
               top_k=25, lib_tol=0.01, lib_hit=0.8, lib_min_matches=3, lib_beta=4.0, lib_c0=0.8,
-              lib_cap=200, workers=4, max_seconds=5400, device="cpu", exclude_libs=())
+              lib_cap=200, workers=4, max_seconds=5400, device="cpu", exclude_libs=(),
+              # optional neural re-rank of each list (sanpier/casmi-spectrum-model-v1: train.py and data audit public;
+              # trained on all of train.parquet, so not testable on the panel): reciprocal-rank fusion
+              # 1/(offset + C1 rank) + neural_weight / (offset + neural rank), Fork A's "Neural025" rule (0.25, 3)
+              neural_bundle="", neural_weight=0.25, neural_offset=3.0, neural_top=25)
 # exclude_libs: panel only - train.parquet libraries left out of the library search (the queries' own library)
 
 _W = {}
@@ -134,6 +138,49 @@ def library_hits(test: pd.DataFrame, train_path, p, hide: dict | None = None) ->
     return hits
 
 
+def neural_rerank(rows_out: list, test: pd.DataFrame, p: dict, report: dict) -> list:
+    """Re-order each list's first neural_top candidates by reciprocal-rank fusion with the neural scorer."""
+    import sys as _sys
+    t0 = time.time()
+    try:
+        _sys.path.insert(0, str(p["neural_bundle"]))
+        from inference import Scorer
+        scorer = Scorer(p["neural_bundle"], device=p["device"])
+    except Exception as e:                    # without the scorer the lists stay as they are
+        report["neural_error"] = f"{type(e).__name__}: {str(e)[:150]}"
+        return rows_out
+    by_mol = {str(m): g for m, g in test.groupby("molecule_id", sort=False)}
+    out, changed = [], 0
+    for m, smi in rows_out:
+        try:
+            cand = smi.split(";")
+            g = by_mol.get(m)
+            if g is None or len(cand) < 2:
+                out.append((m, smi)); continue
+            spectra = []
+            for r in g.itertuples(index=False):
+                ce = np.atleast_1d(np.asarray(r.collision_energy_ev, dtype=float)) if r.collision_energy_ev is not None else np.zeros(0)
+                spectra.append(dict(mzs=np.asarray(r.ms2_mzs, float), intensities=np.asarray(r.ms2_normalized_intensities, float),
+                                    precursor_mz=float(r.precursor_mz), adduct=str(r.adduct), ionization_mode=str(r.ionization_mode),
+                                    collision_energy=float(np.nanmean(ce)) if len(ce) and np.isfinite(ce).any() else None))
+            head, tail = cand[: p["neural_top"]], cand[p["neural_top"]:]
+            sc = np.asarray(scorer.score_candidates(spectra, head), dtype=np.float64)
+            if not np.isfinite(sc).any():
+                out.append((m, smi)); continue
+            nrank = np.empty(len(head)); nrank[np.argsort(-np.where(np.isfinite(sc), sc, -1e9), kind="stable")] = np.arange(1, len(head) + 1)
+            fused = 1.0 / (p["neural_offset"] + np.arange(1, len(head) + 1)) + p["neural_weight"] / (p["neural_offset"] + nrank)
+            order = np.argsort(-fused, kind="stable")
+            changed += int((order != np.arange(len(head))).any())
+            out.append((m, ";".join([head[i] for i in order] + tail)))
+        except Exception as e:                # one odd molecule keeps its order
+            report["errors"] += 1
+            if len(report["error_samples"]) < 3:
+                report["error_samples"].append(f"neural {m}: {type(e).__name__}: {str(e)[:100]}")
+            out.append((m, smi))
+    report["neural_changed"] = changed; report["neural_seconds"] = round(time.time() - t0, 1)
+    return out
+
+
 def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_path, report_path=None, p=None,
         hide_lib: dict | None = None, logits_fn=None, doc_root=None, dump_path=None, pub_cache=None) -> dict:
     """Write a submission (molecule_id, smiles) from C1. logits_fn / hide_lib / dump_path / pub_cache: offline checks
@@ -240,6 +287,8 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
             report["errors"] += 1
             final = []
         rows_out.append((m, ";".join(final) if final else sample_fill))
+    if p["neural_bundle"]:
+        rows_out = neural_rerank(rows_out, test, p, report)
     out = pd.DataFrame(rows_out, columns=["molecule_id", "smiles"])
     assert out.molecule_id.tolist() == ids and out.smiles.str.split(";").map(len).between(1, 25).all()
     out.to_csv(output_path, index=False)
