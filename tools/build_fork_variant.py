@@ -11,7 +11,8 @@ third neural opinion: after the fork's 0.5 z(public) + 0.5 z(ours) blend, neural
 within each molecule like the blend; any failure keeps the fork's own blend.
 
 usage: python tools/build_fork_variant.py BASE_KERNEL_DIR OUT_DIR SLUG [--pop_w=X] [--np_w=X] [--spec_w=X]
-       [--pop_lam=X] [--poolpop_mu=X] [--pop_tau=X] [--s2m=G] [--commit=fast|smoke]
+       [--pop_lam=X] [--poolpop_mu=X] [--pop_tau=X] [--pc_np=B] [--s2m=G] [--commit=fast|smoke]
+--pc_np=B: the frozen PubChem channel's prior keeps only natural-product membership (bonus B x POP_LAM)
 """
 from __future__ import annotations
 
@@ -29,9 +30,16 @@ def replace_once(text: str, old: str, new: str, what: str) -> str:
     return text.replace(old, new)
 
 
-def edit_frozen(frozen: bytes, pop_lam=None, poolpop_mu=None, pop_tau=None) -> bytes:
+PC_DOC_POP = ("pop = (np.asarray(window_priors[\\'ls\\'], np.float32) + np.asarray(window_priors[\\'lp\\'], np.float32)) "
+              "if use_pop else np.zeros(n, np.float32)")
+
+
+def edit_frozen(frozen: bytes, pop_lam=None, poolpop_mu=None, pop_tau=None, pc_np=None) -> bytes:
+    """pc_np: the PubChem channel's prior keeps only natural-product membership (documentation, synonyms, LOTUS
+    references and depositor sources set to 0) with bonus pc_np, scaled by POP_LAM as before (0.15 x 20 = 3.0)."""
     nb = json.loads(frozen)
-    hits = {"pop_lam": pop_lam is None, "poolpop_mu": poolpop_mu is None, "pop_tau": pop_tau is None}
+    hits = {"pop_lam": pop_lam is None, "poolpop_mu": poolpop_mu is None, "pop_tau": pop_tau is None,
+            "pc_np_settings": pc_np is None, "pc_np_code": pc_np is None}
     for c in nb["cells"]:
         if c["cell_type"] != "code":
             continue
@@ -42,6 +50,15 @@ def edit_frozen(frozen: bytes, pop_lam=None, poolpop_mu=None, pop_tau=None) -> b
             src = replace_once(src, "POOLPOP_MU = 0.15", f"POOLPOP_MU = {poolpop_mu}", "POOLPOP_MU"); hits["poolpop_mu"] = True
         if pop_tau is not None and "S_TAU, POP_TAU = 6.0, 5.0" in src:
             src = replace_once(src, "S_TAU, POP_TAU = 6.0, 5.0", f"S_TAU, POP_TAU = 6.0, {pop_tau}", "POP_TAU"); hits["pop_tau"] = True
+        if pc_np is not None and "NP_BONUS = 1.0   # natural-product bonus" in src:
+            src = replace_once(src, "SRC_BONUS, SRC_BITS = 0.5, 1", "SRC_BONUS, SRC_BITS = 0.0, 1", "SRC_BONUS")
+            src = replace_once(src, "NP_BONUS = 1.0   # natural-product bonus", f"NP_BONUS = {pc_np}   # natural-product bonus", "NP_BONUS")
+            src = replace_once(src, "LOTUS_W = 0.5   # literature prior", "LOTUS_W = 0.0   # literature prior", "LOTUS_W")
+            hits["pc_np_settings"] = True
+        if pc_np is not None and "V17_PATCH = " in src:
+            src = replace_once(src, "_SYN_W = 0.5\\n", "_SYN_W = 0.0\\n", "_SYN_W")
+            src = replace_once(src, PC_DOC_POP, "pop = np.zeros(n, np.float32)", "PubChem documentation term")
+            hits["pc_np_code"] = True
         c["source"] = src.splitlines(keepends=True)
     assert all(hits.values()), f"frozen edits not applied: {hits}"
     return json.dumps(nb, ensure_ascii=False, indent=1).encode()
@@ -146,9 +163,9 @@ def main() -> None:
         if "commit" in args and "COMMIT_MODE = 'smoke'" in s:
             s = replace_once(s, "COMMIT_MODE = 'smoke'", f"COMMIT_MODE = '{args['commit']}'", "COMMIT_MODE")
         m = re.search(r"^FROZEN_B64\s*=\s*([^\n]+)", s, re.M)       # the assignment, not a use
-        if any(k in args for k in ("pop_lam", "poolpop_mu", "pop_tau")) and m:
+        if any(k in args for k in ("pop_lam", "poolpop_mu", "pop_tau", "pc_np")) and m:
             old_raw = base64.b64decode(ast.literal_eval(m.group(1).strip()))
-            new_raw = edit_frozen(old_raw, args.get("pop_lam"), args.get("poolpop_mu"), args.get("pop_tau"))
+            new_raw = edit_frozen(old_raw, args.get("pop_lam"), args.get("poolpop_mu"), args.get("pop_tau"), args.get("pc_np"))
             s = s.replace(m.group(0), "FROZEN_B64 = " + repr(base64.b64encode(new_raw).decode()))
             old_sha, new_sha = hashlib.sha256(old_raw).hexdigest(), hashlib.sha256(new_raw).hexdigest()
             for j, cj in enumerate(cells):              # the pinned SHA-256 may sit in another cell
@@ -173,7 +190,7 @@ def main() -> None:
     meta.update(id=f"adityachauhanx/{slug}", title=slug.replace("-", " "), code_file=nb_path.name)
     (out / "kernel-metadata.json").write_text(json.dumps(meta, indent=1))
     print("written", out / nb_path.name, "| fusion", (pop_w, spec_w, np_w),
-          {k: args[k] for k in ("pop_lam", "poolpop_mu", "pop_tau", "s2m", "commit") if k in args})
+          {k: args[k] for k in ("pop_lam", "poolpop_mu", "pop_tau", "pc_np", "s2m", "commit") if k in args})
 
 
 if __name__ == "__main__":
