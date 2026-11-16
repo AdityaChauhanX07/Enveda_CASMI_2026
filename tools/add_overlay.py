@@ -121,7 +121,7 @@ else:
         _spec.loader.exec_module(_eo)
         _sub = _P('/kaggle/working/submission.csv'); shutil.copy2(_sub, '/kaggle/working/submission_before_edit.csv')
         _rep = _eo.apply(COMP / 'test.parquet', _sub, '/kaggle/working/submission_edit.csv', '/kaggle/working/edit_report.json',
-                         _EDIT_PARAMS)
+                         _EDIT_PARAMS, **globals().get('EDIT_KW', {{}}))   # EDIT_KW: the compliant notebook's model / index paths
         _f = pd.read_csv('/kaggle/working/submission_edit.csv', dtype=str, keep_default_na=False)
         assert _f.molecule_id.tolist() == SAMPLE_IDS and _f.smiles.str.split(';').map(len).between(1, 25).all()
         shutil.copy2('/kaggle/working/submission_edit.csv', _sub)
