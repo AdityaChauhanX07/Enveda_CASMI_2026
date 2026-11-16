@@ -54,6 +54,9 @@ PARAMS = dict(ppm=10.0, w_doc=0.25, max_window=20000, n_partial=2000, n_docpre=4
               # of each spectrum's frag_top peaks its bond-cleavage fragments explain within frag_tol Da (mean over
               # the molecule's spectra), over the pooled within-shortlist sd. Off unless frag_lambda > 0
               frag_lambda=0.0, frag_tol=0.01, frag_h=2, frag_top=30, frag_workers=4,
+              # library_only 1 (a probe): lists hold only train.parquet library hits (>= lib_hit, best cosine first),
+              # no PubChem stage; its LB score is what the library search alone reaches
+              library_only=0,
               # panel only: the answer's documentation capped at stress_cap inside the window stage (stress_ik:
               # molecule -> the answer's standard InChIKey first block), the a7 lesson applied to every cut
               stress_ik=None, stress_cap=None)
@@ -436,6 +439,23 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
     spectra, target = eo.molecule_spectra(test, v4)
     report = dict(molecules=len(ids), with_spectra=len(spectra), pubchem_lists=0, library_molecules=0, library_hits=0,
                   errors=0, error_samples=[], stopped_early=False)
+    if p["library_only"]:                         # probe: library hits only
+        hits = library_hits(test, train_path, p, hide_lib)
+        chem = eo.Chemistry(np.load(Path(foldsafe_dir) / "fp_bits.npy"))
+        rows_out = []
+        for m in ids:
+            final, seen = [], set()
+            for c, s_ in sorted(hits.get(m, {}).values(), key=lambda x: -x[0]):
+                k = chem.key(s_)
+                if k and k not in seen:
+                    seen.add(k); final.append(s_)
+            report["library_molecules"] += int(bool(final)); report["library_hits"] += len(final)
+            rows_out.append((m, ";".join(final[: p["top_k"]]) if final else "CCO"))
+        pd.DataFrame(rows_out, columns=["molecule_id", "smiles"]).to_csv(output_path, index=False)
+        report["seconds"] = round(time.time() - t0, 1)
+        if report_path:
+            Path(report_path).write_text(json.dumps(dict(report, params=p), indent=2))
+        return report
     zs = {}
     if logits_fn is None:
         paths = sorted(str(x) for x in Path(foldsafe_dir).glob("fpnet_fold*.pt"))

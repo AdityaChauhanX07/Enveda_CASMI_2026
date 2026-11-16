@@ -13,7 +13,8 @@ usage: python tools/build_c1_notebook.py OUT_DIR [--edit [--support-gate | --sup
  --npw: also a natural-product-aware window stage (members never lost to documentation cuts): casmi26-c1snpw-compliant;
  --wdoc=W: documentation weight W (default 0.25; 0 with --s2m --np --npw: casmi26-c1d-compliant-docfree); --beta=B: bonus B;
  --coco: COCONUT structures missing from the PubChem windows join them; --libbeta=L: library-hit weight L (default 4);
- --frag=L[:TOL]: fragment explanation at weight L (match tolerance TOL Da, default 0.01); --slug=NAME: kernel name override)
+ --frag=L[:TOL]: fragment explanation at weight L (match tolerance TOL Da, default 0.01); --slug=NAME: kernel name override;
+ --library-only: probe kernel casmi26-c1lib-probe - lists of train.parquet library hits (cosine >= 0.5) only, no overlays)
 """
 from __future__ import annotations
 
@@ -115,7 +116,7 @@ def cell(kind: str, text: str) -> dict:
 
 def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = False, np_prior: bool = False,
           np_window: bool = False, w_doc: float | None = None, beta: float | None = None, coco: bool = False,
-          lib_beta: float | None = None, slug: str | None = None, frag: str | None = None) -> Path:
+          lib_beta: float | None = None, slug: str | None = None, frag: str | None = None, library_only: bool = False) -> Path:
     modules = {f"v4/{n}.py": (V4 / f"{n}.py").read_text() for n in ("chem", "spectra", "fpnet")}
     for n in ("edit_overlay", "c1_pipeline", "fragments"):
         modules[f"{n}.py"] = (ROOT / "casmi" / f"{n}.py").read_text()
@@ -136,6 +137,9 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
         extra += f"- **Library-hit weight:** {lib_beta} x (cosine - 0.8) (default 4).\n"
     run_extra = "".join(f", {k}={v!r}" for k, v in (("w_doc", w_doc), ("lib_beta", lib_beta)) if v is not None)
     run_extra += ", np_coconut_extra=1" if (coco and np_prior) else ""
+    if library_only:
+        run_extra += ", library_only=1, lib_hit=0.5"
+        extra += "- **Probe:** lists hold only spectral-library hits (cosine >= 0.5, best first); no PubChem stage, no overlays.\n"
     if frag:
         lam, _, tol = frag.partition(":")
         run_extra += f", frag_lambda={float(lam)!r}" + (f", frag_tol={float(tol)!r}" if tol else "")
@@ -148,15 +152,16 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
     cells = [cell("markdown", intro), cell("code", SETUP.format(modules=modules)), cell("code", RUN.format(neural=neural, s2m_gamma=S2M_GAMMA if s2m else 0.0, np_beta=nb_beta if np_prior else 0.0,
                                                                             np_window=int(np_prior and np_window),
                                                                             run_extra=run_extra))]
-    cells.append(cell("code", add_overlay.CELL.format(src=(ROOT / "casmi" / "network_overlay.py").read_text(), params={"lam": 4.0})))
-    cells.append(cell("code", add_overlay.LIB_CELL.format(src=(ROOT / "casmi" / "library_overlay.py").read_text(),
-                                                          params=dict(tau=0.5, down=3, min_ref=3))))
+    if not library_only:
+        cells.append(cell("code", add_overlay.CELL.format(src=(ROOT / "casmi" / "network_overlay.py").read_text(), params={"lam": 4.0})))
+        cells.append(cell("code", add_overlay.LIB_CELL.format(src=(ROOT / "casmi" / "library_overlay.py").read_text(),
+                                                              params=dict(tau=0.5, down=3, min_ref=3))))
     if edit_params is not None:       # opt-in: the class-3 generator lost on the LB twice (a7 0.412, a9 0.481 vs 0.485)
         cells.append(cell("code", add_overlay.EDIT_CELL.format(src=(ROOT / "casmi" / "edit_overlay.py").read_text(), params=edit_params)))
     nb = {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
                                        "language_info": {"name": "python"}}, "nbformat": 4, "nbformat_minor": 5}
     out_dir.mkdir(parents=True, exist_ok=True)
-    slug = slug or ("casmi26-c1n-compliant-neural" if neural else
+    slug = slug or ("casmi26-c1lib-probe" if library_only else "casmi26-c1n-compliant-neural" if neural else
             "casmi26-c1d-compliant-docfree" if (s2m and np_prior and np_window and w_doc == 0) else
             "casmi26-c1snpw-compliant" if (s2m and np_prior and np_window) else
             "casmi26-c1snp-compliant" if (s2m and np_prior) else
@@ -193,4 +198,5 @@ if __name__ == "__main__":
                            coco="--coco" in sys.argv,
                            lib_beta=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--libbeta=")), None),
                            slug=next((a.split("=")[1] for a in sys.argv if a.startswith("--slug=")), None),
-                           frag=next((a.split("=")[1] for a in sys.argv if a.startswith("--frag=")), None)))
+                           frag=next((a.split("=")[1] for a in sys.argv if a.startswith("--frag=")), None),
+                           library_only="--library-only" in sys.argv))
