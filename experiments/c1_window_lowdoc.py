@@ -10,7 +10,7 @@ np_window (members never cut, all fully scored, the np_keep best carried into th
 Panel class 2 (the answer's spectra hidden from the library search); cached five-model logits; shared tier for
 candidates (as experiments/c1_panel.py); no spec2mol (its saved scores cover only the earlier shortlists).
 
-usage: c1_window_lowdoc.py NATURAL_PRODUCTS_PARQUET COCONUT_CSV [--caps=none,4,0] [--beta=3]
+usage: c1_window_lowdoc.py NATURAL_PRODUCTS_PARQUET COCONUT_CSV [--caps=none,4,0] [--beta=3] [--w_doc=0.25] [--window_only=1]
 """
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ if __name__ == "__main__":
     args = dict(a[2:].split("=", 1) for a in sys.argv[3:] if a.startswith("--") and "=" in a)
     caps = [None if c == "none" else float(c) for c in args.get("caps", "none,4,0").split(",")]
     beta = float(args.get("beta", 3.0))
+    w_doc = float(args.get("w_doc", 0.25))
     art = ROOT / "artifacts"
     test_path = art / "np_test.parquet"
     t = pd.read_parquet(test_path)
@@ -48,10 +49,11 @@ if __name__ == "__main__":
     edit_overlay.Chemistry.key = lambda self, s_: memo[s_] if s_ in memo else memo.setdefault(s_, key0(self, s_))
     hits0, hit_memo = c1_pipeline.library_hits, {}
     c1_pipeline.library_hits = lambda test, train_path, p, hide=None: hit_memo.setdefault("h", hits0(test, train_path, p, hide))
-    base = dict(np_table=sys.argv[1], np_coconut=sys.argv[2], np_beta=beta, stress_ik=std)
-    print(f"class 2, C1 + {beta} x natural-product membership; answer documentation capped inside the window stage")
+    base = dict(np_table=sys.argv[1], np_coconut=sys.argv[2], np_beta=beta, stress_ik=std, w_doc=w_doc)
+    print(f"class 2, C1 (w_doc {w_doc}) + {beta} x natural-product membership; answer documentation capped inside the window stage")
+    variants = (("C1 + bonus", dict(np_window=0)), ("C1 + bonus + NP-aware window", dict(np_window=1)))
     for cap in caps:
-        for name, extra in (("C1 + bonus", dict(np_window=0)), ("C1 + bonus + NP-aware window", dict(np_window=1))):
+        for name, extra in variants[1:] if args.get("window_only") == "1" else variants:
             out = art / "c1_window_lowdoc_sub.csv"
             rep = c1_pipeline.run(test_path, DATA / "train.parquet", EXT / "pubchem_prior" / "casmi26-pubchem-tier", EXT / "foldsafe",
                                   EXT / "v4g" / "casmi26-v4b-models" / "code" / "casmi", out, None, dict(base, stress_cap=cap, **extra),
