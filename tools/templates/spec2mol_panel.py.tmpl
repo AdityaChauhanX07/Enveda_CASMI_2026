@@ -1,0 +1,67 @@
+# Panel check: spec2mol (held out the panel's molecules) re-ranking C1's class-2 and class-1-view lists (CPU).
+import base64, glob, json, os, subprocess, sys, time, zlib
+from pathlib import Path
+import numpy as np, pandas as pd
+_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+_whl = [w for w in glob.glob("/kaggle/input/**/rdkit-*.whl", recursive=True) if _tag in w and "2026.3.3" in w]
+subprocess.run([sys.executable, "-m", "pip", "install", "--no-index", "--no-deps", "-q", _whl[0]], check=True)
+import torch
+unpack = lambda text: zlib.decompress(base64.b64decode(text)).decode()
+LISTS = json.loads(unpack(%r))
+W = Path("/kaggle/working/eo"); W.mkdir(parents=True, exist_ok=True); (W / "edit_overlay.py").write_text(unpack(%r))
+sys.path.insert(0, str(W))
+import edit_overlay as eo
+INPUT = Path("/kaggle/input")
+S2M = Path(sorted(glob.glob(str(INPUT / "**/casmi26-spec2mol/spec2mol.pt"), recursive=True), key=len)[0]).parent
+sys.path.insert(0, str(S2M))
+from spec2mol_model import SpecMol
+from spec2mol_features import spectrum
+ck = torch.load(S2M / "spec2mol.pt", map_location="cpu", weights_only=False)
+model = SpecMol(**ck["cfg"]); model.load_state_dict(ck["model"]); model.eval()
+bits = np.load(sorted(glob.glob(str(INPUT / "**/casmi26-fold-safe-fpnet/fp_bits.npy"), recursive=True) + glob.glob(str(INPUT / "**/fp_bits.npy"), recursive=True), key=len)[0])
+chem = eo.Chemistry(bits)
+comp = next(Path(t).parent for t in glob.glob(str(INPUT / "**/train.parquet"), recursive=True) if "enveda" in t.lower())
+import pyarrow as pa, pyarrow.compute as pc, pyarrow.parquet as pq
+pf = pq.ParquetFile(comp / "train.parquet"); parts = []
+for g in range(pf.num_row_groups):
+    msk = pc.equal(pf.read_row_group(g, columns=["ingest_lib"])["ingest_lib"], "enveda-np-examples")
+    idx = np.flatnonzero(np.asarray(msk.to_numpy(zero_copy_only=False), dtype=bool))
+    if len(idx): parts.append(pf.read_row_group(g).take(pa.array(idx)))
+t = pa.concat_tables(parts).to_pandas()
+t["m"] = [chem.key(s) for s in t.normalized_smiles]
+print("np-examples spectra", len(t), "molecules", t.m.nunique(), "| spec2mol cfg", ck["cfg"], "val", ck.get("val"), flush=True)
+scale = float(model.scale())
+neural = {}
+with torch.inference_mode():
+    for tagv in ("c2", "c1", "all"):
+        for m, cand in LISTS[tagv].items():
+            if (tagv, m) in neural: continue
+            g = t[t.m == m]
+            feats = [spectrum(r.ms2_mzs, r.ms2_normalized_intensities, r.precursor_mz, r.adduct, r.ionization_mode, r.collision_energy_ev) for r in g.itertuples()]
+            feats = [f for f in feats if f is not None]
+            fps = [chem.fingerprint(s) for _, s in cand]
+            ok = [i for i, f in enumerate(fps) if f is not None]
+            if not feats or not ok:
+                neural[(tagv, m)] = None; continue
+            pk = torch.tensor(np.array([f[0] for f in feats], np.float32)); npk = torch.tensor([f[1] for f in feats]); meta = torch.tensor(np.array([f[2] for f in feats]))
+            ad = torch.tensor([f[3] for f in feats])
+            z, _ = model.encode_spectra(pk, npk, meta, ad)
+            me = model.encode_molecules(torch.tensor(np.array([fps[i] for i in ok], np.float32)))
+            sc = np.full(len(cand), -1e9); sc[ok] = ((z @ me.T).mean(0) * scale).numpy()
+            neural[(tagv, m)] = sc
+def mrr(tagv, w):
+    tot = 0.0
+    for m, cand in LISTS[tagv].items():
+        keys = [k for k, _ in cand]
+        sc = neural.get((tagv, m))
+        if sc is not None and w > 0:
+            nr = np.empty(len(cand)); nr[np.argsort(-sc, kind="stable")] = np.arange(1, len(cand) + 1)
+            fused = 1.0 / (3.0 + nr) if w > 1e6 else 1.0 / (3.0 + np.arange(1, len(cand) + 1)) + w / (3.0 + nr)
+            order = np.argsort(-fused, kind="stable"); keys = [keys[i] for i in order]
+        tot += 1.0 / (keys.index(m) + 1) if m in keys else 0.0
+    return tot / 250
+json.dump({m: {k: float(v) for (k, _), v in zip(LISTS["all"][m], neural[("all", m)])} for m in LISTS["all"] if neural.get(("all", m)) is not None},
+          open("/kaggle/working/spec2mol_scores.json", "w"))
+print("neural weight | class 2 (answer's spectra hidden) | class-1 view")
+for w in (0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 1e9):
+    print(f"{'neural only' if w > 1e6 else w:>13} | {mrr('c2', w):.4f} | {mrr('c1', w):.4f}", flush=True)

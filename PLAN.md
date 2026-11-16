@@ -45,11 +45,7 @@ Edit overlay dropped; b7 and a8 not run. **a8n** = Fork A + networking + library
 candidates, no documentation term; panel class-2 lists +0.030, 0.8 % of class-1 answers flagged) is the next A/B
 against a3. One CASMI GPU job at a time (another competition on the account needs the second slot).
 
-**Next.** (1) a8n 0.485 (a3 0.486), a9 0.481: the class-3 generator is dropped (a7 and a9 both lost on the LB); final #1 = a8n or a3. Final #2 = the compliant pipeline C1 (own PubChem index, fold-safe FPNets, library hits, networking, library overlay; CPU only). (2) If it holds: more reference spectra for
-the library overlay (the fork's extlib / MassBank sets), tau 0.6. (3) Edit overlay only in a form that cannot displace
-the fork's leader on documentation alone, checked on the panel with the answers' documentation lowered
-(`experiments/lowdoc_leader.py`) before any GPU run. Panel lesson: its answers are far better documented than the
-hidden test's, so rules that lean on documentation look safer there than they are.
+**Next.** (1) Final #1 = a8n (0.485) or a3 (0.486); the class-3 generator is dropped (a7 and a9 lost on the LB). (2) Final #2 = a compliant C1 variant, chosen by panel + LB: C1 (own PubChem index, fold-safe FPNets, doc 0.25, library-hit bonus, networking, library overlay), C1n (+ sanpier rank fusion), C1s (+ spec2mol over each whole shortlist, pooled scale, 0.75: +0.04 class 2 at answer doc <= 6) and C1snp (C1s + 1.0 for COCONUT / LOTUS / NPAtlas members: COCONUT holds 99.6 % of the panel answers but 11 % of the decoys at doc <= 4) - all CPU, on the LB now. (3) If the priors hold on the LB: COCONUT-only structures as extra candidates (25.6 k in range are missing from our PubChem index), then a compliant full-data FPNet (GPU after the Nov 21 reset, with approval). Panel lesson: its answers are far better documented than the hidden test's, so every rule is checked with the answer's documentation capped (6 and 4) before it ships.
 
 ## 1. Verified facts
 

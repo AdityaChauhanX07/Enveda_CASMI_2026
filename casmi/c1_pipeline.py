@@ -27,7 +27,17 @@ PARAMS = dict(ppm=10.0, w_doc=0.25, max_window=20000, n_partial=2000, n_docpre=4
               # optional neural re-rank of each list (sanpier/casmi-spectrum-model-v1: train.py and data audit public;
               # trained on all of train.parquet, so not testable on the panel): reciprocal-rank fusion
               # 1/(offset + C1 rank) + neural_weight / (offset + neural rank), Fork A's "Neural025" rule (0.25, 3)
-              neural_bundle="", neural_weight=0.25, neural_offset=3.0, neural_top=25)
+              neural_bundle="", neural_weight=0.25, neural_offset=3.0, neural_top=25,
+              # optional spec2mol fusion over each molecule's whole shortlist, before the cut to top_k (casmi26-spec2mol:
+              # train.py / prep.py public; it held out the panel's molecules): score + s2m_gamma x spec2mol score /
+              # scale, scale = s2m_scale or the median within-shortlist sd over molecules with >= s2m_min_n scores
+              # (s2m_fallback below 20 such molecules; panel 5.5). Off unless s2m_bundle is set and s2m_gamma > 0
+              s2m_bundle="", s2m_gamma=0.0, s2m_scale=0.0, s2m_min_n=5, s2m_fallback=5.5,
+              # optional natural-product prior: + np_beta for a candidate listed in LOTUS / NPAtlas (np_table:
+              # natural_products.parquet of casmi26-natural-product-knowledge-table, build_np.py public; scorer key) or
+              # in COCONUT (np_coconut: the COCONUT CSV-lite export; standard InChIKey first block), + np_delta x
+              # ln(1 + LOTUS references). Off unless np_beta or np_delta is set and a table is given
+              np_table="", np_coconut="", np_beta=0.0, np_delta=0.0)
 # exclude_libs: panel only - train.parquet libraries left out of the library search (the queries' own library)
 
 _W = {}
@@ -147,6 +157,67 @@ def library_hits(test: pd.DataFrame, train_path, p, hide: dict | None = None) ->
                     if c > best[0]:
                         hits[m][ik[t]] = (float(c), smi[t])
     return hits
+
+
+class Spec2Mol:
+    """spec2mol: spectra and fingerprints (the fold-safe FPNets' bit selection) embedded in one space; a candidate's
+    score is the mean over the molecule's spectra of cosine x the model's scale."""
+
+    def __init__(self, bundle, bits_path, device="cpu"):
+        import sys as _sys
+        import torch
+        import edit_overlay as eo
+        _sys.path.insert(0, str(bundle))
+        from spec2mol_features import spectrum
+        from spec2mol_model import SpecMol
+        ck = torch.load(Path(bundle) / "spec2mol.pt", map_location=device, weights_only=False)
+        self.model = SpecMol(**ck["cfg"]); self.model.load_state_dict(ck["model"]); self.model.eval()
+        self.torch, self.spectrum, self.scale = torch, spectrum, float(self.model.scale())
+        self.chem = eo.Chemistry(np.load(bits_path))
+
+    def encode(self, g: pd.DataFrame):
+        """The molecule's spectra (rows of test.parquet) embedded, or None."""
+        feats = [self.spectrum(r.ms2_mzs, r.ms2_normalized_intensities, r.precursor_mz, r.adduct, r.ionization_mode,
+                               r.collision_energy_ev) for r in g.itertuples(index=False)]
+        feats = [f for f in feats if f is not None]
+        if not feats:
+            return None
+        t = self.torch
+        with t.inference_mode():
+            z, _ = self.model.encode_spectra(t.tensor(np.array([f[0] for f in feats], np.float32)), t.tensor([f[1] for f in feats]),
+                                             t.tensor(np.array([f[2] for f in feats])), t.tensor([f[3] for f in feats]))
+        return z
+
+    def score(self, z, smiles: list) -> np.ndarray:
+        """Scores of the candidates for embedded spectra z (NaN where a candidate has no fingerprint)."""
+        out = np.full(len(smiles), np.nan)
+        fps = [self.chem.fingerprint(s_) for s_ in smiles]
+        ok = [i for i, f in enumerate(fps) if f is not None]
+        if z is None or not ok:
+            return out
+        with self.torch.inference_mode():
+            me = self.model.encode_molecules(self.torch.tensor(np.array([fps[i] for i in ok], np.float32)))
+            out[ok] = ((z @ me.T).mean(0) * self.scale).numpy()
+        return out
+
+
+def s2m_pooled_scale(vs: dict, min_n: int, fallback: float) -> float:
+    """Median within-shortlist sd of the spec2mol scores over molecules with >= min_n scores. One scale for every
+    molecule: a shortlist's own sd inflates small differences on short lists (2-5 candidates), which cost the
+    panel's class-1 view 0.018 against 0.003 with the pooled scale."""
+    sds = [float(np.std(v[np.isfinite(v)])) for v in vs.values() if np.isfinite(v).sum() >= min_n]
+    return float(np.median(sds)) if len(sds) >= 20 else float(fallback)
+
+
+def s2m_fuse(sc: dict, v: np.ndarray, gamma: float, scale: float) -> dict:
+    """{key: (score, smiles)} plus gamma x (v - mean) / scale for the spec2mol scores v (in sc's order); candidates
+    without a score count as the lowest scored. Unchanged with fewer than two scores."""
+    ok = np.isfinite(v)
+    if ok.sum() < 2:
+        return sc
+    mu, sd = v[ok].mean(), scale + 1e-9
+    zz = np.where(ok, (v - mu) / sd, (v[ok].min() - mu) / sd)
+    return {k: (val + gamma * float(a), s_) for (k, (val, s_)), a in zip(sc.items(), zz)}
 
 
 def neural_rerank(rows_out: list, test: pd.DataFrame, p: dict, report: dict) -> list:
@@ -273,7 +344,16 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
     tier = eo.Tier(Path(index_root), Path(doc_root or index_root))
     chem = eo.Chemistry(np.load(bits))
     sample_fill = "CCO"
-    rows_out = []
+    s2m, by_mol = None, {}
+    if p["s2m_bundle"] and p["s2m_gamma"] > 0:
+        try:
+            s2m = Spec2Mol(p["s2m_bundle"], bits, p["device"])
+            by_mol = {str(m): g for m, g in test.groupby("molecule_id", sort=False)}
+            report["s2m_molecules"] = 0
+        except Exception as e:                 # without spec2mol the lists stay as C1 makes them
+            report["s2m_error"] = f"{type(e).__name__}: {str(e)[:150]}"
+    scs = {}                                      # molecule -> {metric key: (score, smiles)}
+    std = {}                                      # metric key -> standard InChIKey first blocks seen for it
     for m in ids:
         try:
             # a library hit adds lib_beta * (cos - lib_c0) to its candidate's score (a hit missing from the PubChem
@@ -282,21 +362,62 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
             sc = {}
             for r, v in pub.get(m, []):
                 s_ = tier.smiles(r); k = chem.key(s_)
+                if k:
+                    std.setdefault(k, set()).add(bytes(tier.ik[r]).decode())
                 if k and k not in sc:
                     sc[k] = (v, s_)
             base = min(v for v, _ in sc.values()) if sc else 0.0
             if m in hits:
                 report["library_molecules"] += 1; report["library_hits"] += len(hits[m])
-            for _, (c, s_) in hits.get(m, {}).items():
+            for hik, (c, s_) in hits.get(m, {}).items():
                 k = chem.key(s_)
                 if k:
+                    std.setdefault(k, set()).add(str(hik)[:14])
                     bonus = p["lib_beta"] * max(0.0, c - p["lib_c0"])
                     sc[k] = (sc[k][0] + bonus, sc[k][1]) if k in sc else (base + bonus, s_)
-            final = [s_ for _, (v, s_) in sorted(sc.items(), key=lambda x: -x[1][0])][: p["top_k"]]
+            scs[m] = sc
             report["pubchem_lists"] += int(bool(pub.get(m)))
         except Exception as e:
             report["errors"] += 1
-            final = []
+            if len(report["error_samples"]) < 3:
+                report["error_samples"].append(f"assemble {m}: {type(e).__name__}: {str(e)[:100]}")
+    if s2m is not None:                           # spec2mol over each whole shortlist (experiments/spec2mol_lowdoc.py)
+        vs = {}
+        for m, sc in scs.items():
+            if len(sc) > 1 and m in by_mol:
+                try:
+                    vs[m] = s2m.score(s2m.encode(by_mol[m]), [s_ for _, s_ in sc.values()])
+                except Exception as e:         # this molecule keeps C1's order
+                    report["errors"] += 1
+                    if len(report["error_samples"]) < 3:
+                        report["error_samples"].append(f"s2m {m}: {type(e).__name__}: {str(e)[:100]}")
+        scale = p["s2m_scale"] or s2m_pooled_scale(vs, p["s2m_min_n"], p["s2m_fallback"])
+        report["s2m_scale"] = round(scale, 4)
+        for m, v in vs.items():
+            scs[m] = s2m_fuse(scs[m], v, p["s2m_gamma"], scale)
+            report["s2m_molecules"] += 1
+        report["s2m_seconds"] = round(time.time() - t0, 1)
+    if (p["np_table"] or p["np_coconut"]) and (p["np_beta"] or p["np_delta"]):
+        try:
+            refs, coco = {}, set()
+            if p["np_table"]:
+                npt = pd.read_parquet(p["np_table"], columns=["scorer_key", "n_references"])
+                npt["n_references"] = pd.to_numeric(npt.n_references, errors="coerce").fillna(0.0)
+                refs = npt.groupby("scorer_key").n_references.max().to_dict()
+            if p["np_coconut"]:
+                coco = set(pd.read_csv(p["np_coconut"], usecols=["standard_inchi_key"]).standard_inchi_key.dropna().str.slice(0, 14))
+            report["np_table_keys"], report["np_coconut_keys"] = len(refs), len(coco)
+            report["np_members"] = 0
+            for m, sc in scs.items():
+                for k in sc:
+                    if k in refs or std.get(k, set()) & coco:
+                        add = p["np_beta"] + p["np_delta"] * float(np.log1p(refs.get(k, 0.0)))
+                        sc[k] = (sc[k][0] + add, sc[k][1]); report["np_members"] += 1
+        except Exception as e:                 # without the tables the lists stay as they are
+            report["np_error"] = f"{type(e).__name__}: {str(e)[:150]}"
+    rows_out = []
+    for m in ids:
+        final = [s_ for _, (v, s_) in sorted(scs.get(m, {}).items(), key=lambda x: -x[1][0])][: p["top_k"]]
         rows_out.append((m, ";".join(final) if final else sample_fill))
     if p["neural_bundle"]:
         rows_out = neural_rerank(rows_out, test, p, report)
