@@ -134,8 +134,9 @@ def library_hits(test: pd.DataFrame, train_path, p, hide: dict | None = None) ->
 
 
 def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_path, report_path=None, p=None,
-        hide_lib: dict | None = None, logits_fn=None, doc_root=None) -> dict:
-    """Write a submission (molecule_id, smiles) from C1. logits_fn / hide_lib: offline checks only."""
+        hide_lib: dict | None = None, logits_fn=None, doc_root=None, dump_path=None, pub_cache=None) -> dict:
+    """Write a submission (molecule_id, smiles) from C1. logits_fn / hide_lib / dump_path / pub_cache: offline checks
+    only (dump_path pickles the PubChem lists and library hits; pub_cache reuses a dump's PubChem lists)."""
     import edit_overlay as eo
     t0 = time.time()
     p = {**PARAMS, **(p or {})}
@@ -165,7 +166,8 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
                 report["error_samples"].append(f"logits {m}: {type(e).__name__}: {str(e)[:100]}")
     report["logits_seconds"] = round(time.time() - t0, 1)
     tasks = [(m, target[m], zs[m], p) for m in ids if m in zs and m in target]
-    pub = {}
+    pub = dict(pub_cache) if pub_cache else {}
+    tasks = [t for t in tasks if t[0] not in pub]
     bits = Path(foldsafe_dir) / "fp_bits.npy"
     deadline = t0 + p["max_seconds"]
     import multiprocessing as mp
@@ -206,6 +208,9 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
     except Exception as e:
         report["library_error"] = f"{type(e).__name__}: {str(e)[:150]}"
     report["library_seconds"] = round(time.time() - t0, 1)
+    if dump_path:
+        import pickle
+        pickle.dump(dict(pub=pub, hits=hits, ids=ids), open(dump_path, "wb"))
     tier = eo.Tier(Path(index_root), Path(doc_root or index_root))
     chem = eo.Chemistry(np.load(bits))
     sample_fill = "CCO"

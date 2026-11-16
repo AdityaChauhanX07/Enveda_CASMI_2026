@@ -55,9 +55,16 @@ if __name__ == "__main__":
         if args.get("only") == "c2" and hide is None or args.get("only") == "c1" and hide is not None:
             continue
         out = art / "c1_panel_sub.csv"
+        tag = "c2" if hide is not None else "c1"
+        dump = art / f"c1_dump_{tag}.pkl"                # PubChem lists + library hits for offline rule replays
+        cache = None
+        other = art / ("c1_dump_c1.pkl" if tag == "c2" else "c1_dump_c2.pkl")
+        if other.is_file() and "fresh" not in args:  # the PubChem stage is the same in both situations
+            import pickle
+            cache = pickle.load(open(other, "rb"))["pub"]
         rep = c1_pipeline.run(test_path, DATA / "train.parquet", index_root, EXT / "foldsafe",
                               EXT / "v4g" / "casmi26-v4b-models" / "code" / "casmi", out, None, dict(p, **extra),
-                              hide_lib=hide, logits_fn=cached.get, doc_root=doc_root)
+                              hide_lib=hide, logits_fn=cached.get, doc_root=doc_root, dump_path=dump, pub_cache=cache)
         sub = pd.read_csv(out, dtype=str, keep_default_na=False)
         print(f"{name}: MRR {score(sol, sub):.4f} | " + str({k: rep.get(k) for k in ("with_spectra", "pubchem_lists", "library_molecules", "library_hits",
                                                                                     "errors", "error_samples", "stopped_early", "pubchem_seconds", "seconds")}), flush=True)
