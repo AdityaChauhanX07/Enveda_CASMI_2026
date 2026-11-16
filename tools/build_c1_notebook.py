@@ -26,10 +26,12 @@ V4 = ROOT.parents[0] / "casmi_data" / "ext" / "v4g" / "casmi26-v4b-models" / "co
 # documentation as is 0.811 / 0.871 vs C1 0.815 / 0.874; answer documentation <= 6: 0.564 / 0.676 vs 0.522 / 0.652)
 S2M_GAMMA = 0.75
 # natural-product membership bonus, LOTUS / NPAtlas or COCONUT (experiments/np_prior_lowdoc.py, np_flags_compare.py;
-# C1s base, class 2 at answer documentation as is / <= 6: 0.823 / 0.627 vs 0.811 / 0.564; COCONUT members among
-# answers 99.6 %, among decoys in C1's top 25 11 % at doc <= 4, 42 % at 4-6, 91 % above 12). No reference-count term:
-# it lost 0.045 when the answer's LOTUS references were capped at 1
-NP_BETA = 1.0
+# COCONUT members among answers 99.6 %, among decoys in C1's top 25 11 % at doc <= 4, 42 % at 4-6, 91 % above 12).
+# C1s base, class 2 at answer documentation as is / <= 6 / <= 4 / 0: none 0.811 / 0.564 / 0.452 / 0.236; 1.0: 0.823 /
+# 0.627 / 0.539 / 0.343; 3.0: 0.831 / 0.648 / 0.578 / 0.436 (5.0 saturates). C1 scored 0.238 on the LB, close to the
+# panel at answer doc 0: the hidden answers behave as poorly documented, where membership matters most. No
+# reference-count term: it lost 0.045 when the answer's LOTUS references were capped at 1
+NP_BETA = 3.0
 
 INTRO = """# CASMI 2026: compliant pipeline (C1)
 
