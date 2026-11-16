@@ -6,7 +6,8 @@
    as z-standardised fingerprint . logits + w_doc * (log1p substances + log1p PubMed); full fingerprints only for
    the n_partial best rows by the ECFP4-block score plus the n_docpre best-documented rows.
 2. Library hits (class 1): train.parquet spectra with the same adduct and a precursor within `lib_tol` Da of a
-   query spectrum; a structure whose best cosine reaches `lib_hit` goes first (by cosine), added if missing.
+   query spectrum; a structure whose best cosine c reaches `lib_hit` gains lib_beta * (c - lib_c0) on its score
+   (added at the list's lowest score if missing) - a strong match adds evidence instead of overriding the list.
 3. Top 25 per molecule, one per metric key (stereo removed, canonical tautomer, InChIKey first block).
 The overlays (networking, library consistency, guarded edit) run on the result as for the other notebooks.
 Uses casmi/edit_overlay.py for spectra, logits, fingerprints and the index reader.
@@ -21,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 PARAMS = dict(ppm=10.0, w_doc=0.25, max_window=20000, n_partial=2000, n_docpre=400, window_sample=200, seed=0,
-              top_k=25, lib_tol=0.01, lib_hit=0.75, lib_min_matches=4,
+              top_k=25, lib_tol=0.01, lib_hit=0.8, lib_min_matches=3, lib_beta=4.0, lib_c0=0.8,
               lib_cap=200, workers=4, max_seconds=5400, device="cpu", exclude_libs=())
 # exclude_libs: panel only - train.parquet libraries left out of the library search (the queries' own library)
 
@@ -217,19 +218,23 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
     rows_out = []
     for m in ids:
         try:
-            cand = []
-            for k, (c, s) in sorted(hits.get(m, {}).items(), key=lambda x: -x[1][0]):
-                cand.append(s)
+            # a library hit adds lib_beta * (cos - lib_c0) to its candidate's score (a hit missing from the PubChem
+            # list starts at the list's lowest score). Panel (experiments/c1_replay.py): beta 4, c0 0.8 -> class 2
+            # 0.825 -> 0.815 (false hits), class-1 view 0.825 -> 0.877; putting hits >= 0.75 first: 0.716 / 0.926
+            sc = {}
+            for r, v in pub.get(m, []):
+                s_ = tier.smiles(r); k = chem.key(s_)
+                if k and k not in sc:
+                    sc[k] = (v, s_)
+            base = min(v for v, _ in sc.values()) if sc else 0.0
             if m in hits:
                 report["library_molecules"] += 1; report["library_hits"] += len(hits[m])
-            cand += [tier.smiles(r) for r, _ in pub.get(m, [])]
-            seen, final = set(), []
-            for s in cand:
-                k = chem.key(s)
-                if k and k not in seen:
-                    seen.add(k); final.append(s)
-                if len(final) >= p["top_k"]:
-                    break
+            for _, (c, s_) in hits.get(m, {}).items():
+                k = chem.key(s_)
+                if k:
+                    bonus = p["lib_beta"] * max(0.0, c - p["lib_c0"])
+                    sc[k] = (sc[k][0] + bonus, sc[k][1]) if k in sc else (base + bonus, s_)
+            final = [s_ for _, (v, s_) in sorted(sc.items(), key=lambda x: -x[1][0])][: p["top_k"]]
             report["pubchem_lists"] += int(bool(pub.get(m)))
         except Exception as e:
             report["errors"] += 1

@@ -3,7 +3,9 @@ c1_dump_c1.pkl: the same PubChem lists, library hits with the answer's spectra h
 library left out). Class 2 shows what false hits cost, the class-1 view what true hits gain.
 
 Rules: none (PubChem lists only); first tau (every hit >= tau first, best first); top1 tau (only the best hit, if
->= tau, at rank 1); top1 tau + margin (the best hit only if it beats the second-best hit by `margin`).
+>= tau, at rank 1); top1 tau + margin (the best hit only if it beats the second-best hit by `margin`); bonus beta c0
+(a hit adds beta * max(0, cos - c0) to the candidate's PubChem score; hits missing from the list start at its
+lowest score).
 """
 from __future__ import annotations
 
@@ -22,6 +24,19 @@ from casmi.edit_overlay import Chemistry, Tier  # noqa: E402
 def assemble(m, pub, hits, rule, tier, chem, top_k=25):
     h = sorted(hits.get(m, {}).items(), key=lambda x: -x[1][0])
     kind, tau, margin = rule
+    if kind == "bonus":                               # tau = beta, margin = c0: score + beta * max(0, cos - c0)
+        beta, c0 = tau, margin
+        sc = {}
+        for r, v in pub.get(m, []):
+            k = chem.key(tier.smiles(r))
+            if k and k not in sc:
+                sc[k] = v
+        base = min(sc.values()) if sc else 0.0
+        for _, (c, s) in h:
+            k = chem.key(s)
+            if k:
+                sc[k] = sc.get(k, base) + beta * max(0.0, c - c0)
+        return [k for k, _ in sorted(sc.items(), key=lambda x: -x[1])][:top_k]
     lead = []
     if kind == "first":
         lead = [s for _, (c, s) in h if c >= tau]
@@ -56,10 +71,11 @@ if __name__ == "__main__":
     n2 = sum(bool(v) for v in d2["hits"].values()); n1 = sum(bool(v) for v in d1["hits"].values())
     print(f"molecules with hits >= 0.5: class 2 (all false) {n2}, class-1 view {n1}")
     rules = [("none", 9, 0)] + [("first", t, 0) for t in (0.75, 0.8, 0.85, 0.9, 0.95)] + \
-            [("top1", t, 0) for t in (0.75, 0.8, 0.85, 0.9, 0.95)] + [("top1", t, mg) for t in (0.8, 0.9) for mg in (0.05, 0.1)]
+            [("top1", t, 0) for t in (0.75, 0.8, 0.85, 0.9, 0.95)] + [("top1", t, mg) for t in (0.8, 0.9) for mg in (0.05, 0.1)] + \
+            [("bonus", b, c0) for c0 in (0.6, 0.7, 0.8) for b in (2.0, 4.0, 8.0)]
     print("rule              | class 2 | class-1 view | 0.2 x c1 + 0.55 x c2 (class 3 not modelled)")
     for r in rules:
         c2 = mrr({m: assemble(m, d2["pub"], d2["hits"], r, tier, chem) for m in ids}, ids)
         c1 = mrr({m: assemble(m, d1["pub"], d1["hits"], r, tier, chem) for m in ids}, ids)
-        name = "no hits" if r[0] == "none" else f"{r[0]} {r[1]}" + (f" margin {r[2]}" if r[2] else "")
+        name = "no hits" if r[0] == "none" else (f"bonus {r[1]} x (cos - {r[2]})" if r[0] == "bonus" else f"{r[0]} {r[1]}" + (f" margin {r[2]}" if r[2] else ""))
         print(f"{name:17s} | {c2:.4f}  | {c1:.4f}       | {0.2 * c1 + 0.55 * c2:.4f}")
