@@ -6,10 +6,11 @@ casmi26-fold-safe-fpnet, training code public); the host's RDKit wheel. The FPNe
 (Ahmed Berat Özer, Apache-2.0) and our modules are embedded in the notebook.
 Cells: setup -> C1 lists (casmi/c1_pipeline.py) -> networking -> library consistency [-> guarded edit overlay with --edit].
 
-usage: python tools/build_c1_notebook.py OUT_DIR [--edit [--support-gate | --support-rerank]] [--neural | --s2m] [--np]
+usage: python tools/build_c1_notebook.py OUT_DIR [--edit [--support-gate | --support-rerank]] [--neural | --s2m] [--np [--npw]]
 (--neural: separate kernel casmi26-c1n-compliant-neural with sanpier's spectrum model fused at rank level;
  --s2m: separate kernel casmi26-c1s-compliant-spec2mol with spec2mol fused into each whole shortlist, gamma S2M_GAMMA;
- --np: natural-product prior NP_BETA for LOTUS / NPAtlas members; with --s2m the kernel is casmi26-c1snp-compliant)
+ --np: natural-product prior NP_BETA for COCONUT / LOTUS / NPAtlas members; with --s2m the kernel is casmi26-c1snp-compliant;
+ --npw: also a natural-product-aware window stage (members never lost to documentation cuts): casmi26-c1snpw-compliant)
 """
 from __future__ import annotations
 
@@ -90,7 +91,8 @@ try:
                            dict(device='cpu', workers=4, max_seconds=max(600, min(4 * 3600, _left - 3 * 3600)),
                                 neural_bundle=str(Path(_nb[0]).parent) if _nb else '',
                                 s2m_bundle=str(Path(_s2m[0]).parent) if _s2m else '', s2m_gamma={s2m_gamma!r},
-                                np_table=_npt[0] if _npt else '', np_coconut=_coco[0] if _coco else '', np_beta={np_beta!r}))
+                                np_table=_npt[0] if _npt else '', np_coconut=_coco[0] if _coco else '', np_beta={np_beta!r},
+                                np_window={np_window!r}))
     _f = pd.read_csv('/kaggle/working/submission.csv', dtype=str, keep_default_na=False)
     assert _f.molecule_id.tolist() == SAMPLE_IDS and _f.smiles.str.split(';').map(len).between(1, 25).all()
     print('C1:', json.dumps({{k: v for k, v in _rep.items() if k != 'params'}}))
@@ -108,7 +110,8 @@ def cell(kind: str, text: str) -> dict:
     return c
 
 
-def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = False, np_prior: bool = False) -> Path:
+def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = False, np_prior: bool = False,
+          np_window: bool = False) -> Path:
     modules = {f"v4/{n}.py": (V4 / f"{n}.py").read_text() for n in ("chem", "spectra", "fpnet")}
     for n in ("edit_overlay", "c1_pipeline"):
         modules[f"{n}.py"] = (ROOT / "casmi" / f"{n}.py").read_text()
@@ -117,12 +120,15 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
              f"{S2M_GAMMA} (pooled scale).\n" if s2m else "")
     extra += ("- **Natural-product prior:** candidates listed in COCONUT (the COCONUT CSV-lite export of September 2026)\n"
               "  or in LOTUS / NPAtlas (`natural_products.parquet` of `casmi26-natural-product-knowledge-table`, built\n"
-              f"  from both by its public `build_np.py`) gain {NP_BETA}.\n" if np_prior else "")
+              f"  from both by its public `build_np.py`) gain {NP_BETA}"
+              + ("; they are also never lost to the documentation-based cuts of the window stage" if np_window else "")
+              + ".\n" if np_prior else "")
     credit = " and spec2mol" if s2m else ""
     credit += ("; COCONUT (Chandrasekhar et al., NAR 2025; CC0), the LOTUS initiative (Rutz et al., eLife 2022) and NPAtlas "
                "(van Santen et al., NAR 2022)" if np_prior else "")
     intro = INTRO.format(s2m_line=extra, s2m_credit=credit)
-    cells = [cell("markdown", intro), cell("code", SETUP.format(modules=modules)), cell("code", RUN.format(neural=neural, s2m_gamma=S2M_GAMMA if s2m else 0.0, np_beta=NP_BETA if np_prior else 0.0))]
+    cells = [cell("markdown", intro), cell("code", SETUP.format(modules=modules)), cell("code", RUN.format(neural=neural, s2m_gamma=S2M_GAMMA if s2m else 0.0, np_beta=NP_BETA if np_prior else 0.0,
+                                                                            np_window=int(np_prior and np_window)))]
     cells.append(cell("code", add_overlay.CELL.format(src=(ROOT / "casmi" / "network_overlay.py").read_text(), params={"lam": 4.0})))
     cells.append(cell("code", add_overlay.LIB_CELL.format(src=(ROOT / "casmi" / "library_overlay.py").read_text(),
                                                           params=dict(tau=0.5, down=3, min_ref=3))))
@@ -131,7 +137,8 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
     nb = {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
                                        "language_info": {"name": "python"}}, "nbformat": 4, "nbformat_minor": 5}
     out_dir.mkdir(parents=True, exist_ok=True)
-    slug = ("casmi26-c1n-compliant-neural" if neural else "casmi26-c1snp-compliant" if (s2m and np_prior) else
+    slug = ("casmi26-c1n-compliant-neural" if neural else "casmi26-c1snpw-compliant" if (s2m and np_prior and np_window) else
+            "casmi26-c1snp-compliant" if (s2m and np_prior) else
             "casmi26-c1s-compliant-spec2mol" if s2m else "casmi26-c1p-compliant-np" if np_prior else "casmi26-c1-compliant")
     path = out_dir / f"{slug}.ipynb"
     path.write_text(json.dumps(nb, ensure_ascii=False, indent=1))
@@ -159,4 +166,4 @@ if __name__ == "__main__":
         params.update(sup_beta=1.0, sup_sigma=0.7)
     assert not ("--neural" in sys.argv and "--s2m" in sys.argv), "one neural variant per kernel"
     print("written", build(Path(sys.argv[1]), params if "--edit" in sys.argv else None, neural="--neural" in sys.argv,
-                           s2m="--s2m" in sys.argv, np_prior="--np" in sys.argv))
+                           s2m="--s2m" in sys.argv, np_prior="--np" in sys.argv, np_window="--npw" in sys.argv))

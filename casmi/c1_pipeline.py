@@ -37,7 +37,18 @@ PARAMS = dict(ppm=10.0, w_doc=0.25, max_window=20000, n_partial=2000, n_docpre=4
               # natural_products.parquet of casmi26-natural-product-knowledge-table, build_np.py public; scorer key) or
               # in COCONUT (np_coconut: the COCONUT CSV-lite export; standard InChIKey first block), + np_delta x
               # ln(1 + LOTUS references). Off unless np_beta or np_delta is set and a table is given
-              np_table="", np_coconut="", np_beta=0.0, np_delta=0.0)
+              np_table="", np_coconut="", np_beta=0.0, np_delta=0.0,
+              # np_window 1: natural-product members of a window are never lost to C1's documentation-based cuts -
+              # all kept when the window exceeds max_window, all (up to np_full, best by the ECFP4-block score) fully
+              # fingerprinted, and the np_keep best by score carried into the shortlist beside the 4 x top_k best rows
+              np_window=0, np_keep=50, np_full=1000,
+              # np_hits 1: a candidate with a library hit (>= lib_hit) gains the bonus as if a member, so a strong
+              # match is never outranked by membership alone (panel, class-1 view with the answer not a member, bonus 3:
+              # 0.520 -> 0.814; with the answer a member and on class 2 within 0.008)
+              np_hits=1,
+              # panel only: the answer's documentation capped at stress_cap inside the window stage (stress_ik:
+              # molecule -> the answer's standard InChIKey first block), the a7 lesson applied to every cut
+              stress_ik=None, stress_cap=None)
 # exclude_libs: panel only - train.parquet libraries left out of the library search (the queries' own library)
 
 _W = {}
@@ -53,11 +64,43 @@ def _one_thread(store: dict) -> None:
         pass
 
 
-def _init_worker(index_root, doc_root, bits_path):
+def h14(a) -> np.ndarray:
+    """uint64 hashes of InChIKey first blocks (bytes or str, 14 characters)."""
+    arr = np.ascontiguousarray(np.asarray(a, "S14")).view(np.uint8).reshape(-1, 14)
+    hi = arr[:, :8].copy().view(np.uint64).ravel()
+    lo = np.zeros((len(arr), 8), np.uint8); lo[:, :6] = arr[:, 8:]
+    return hi * np.uint64(0x9E3779B97F4A7C15) + lo.view(np.uint64).ravel()
+
+
+def is_member(hashes: np.ndarray, members: np.ndarray) -> np.ndarray:
+    """Membership of hashes in the sorted member hashes."""
+    if not len(members) or not len(hashes):
+        return np.zeros(len(hashes), bool)
+    pos = np.minimum(np.searchsorted(members, hashes), len(members) - 1)
+    return members[pos] == hashes
+
+
+def load_np(p: dict) -> tuple[dict, set, np.ndarray]:
+    """(scorer key -> LOTUS references, COCONUT InChIKey first blocks, sorted member hashes of both tables)."""
+    refs, coco, blocks = {}, set(), []
+    if p["np_table"]:
+        npt = pd.read_parquet(p["np_table"], columns=["ik14", "scorer_key", "n_references"])
+        npt["n_references"] = pd.to_numeric(npt.n_references, errors="coerce").fillna(0.0)
+        refs = npt.groupby("scorer_key").n_references.max().to_dict()
+        blocks.append(npt.ik14.dropna().astype(str).str.slice(0, 14).to_numpy())
+    if p["np_coconut"]:
+        coco = set(pd.read_csv(p["np_coconut"], usecols=["standard_inchi_key"]).standard_inchi_key.dropna().str.slice(0, 14))
+        blocks.append(np.array(sorted(coco)))
+    hashes = np.unique(h14(np.concatenate(blocks))) if blocks else np.zeros(0, np.uint64)
+    return refs, coco, hashes
+
+
+def _init_worker(index_root, doc_root, bits_path, member_path=""):
     import edit_overlay as eo
     _one_thread(_W)
     _W["tier"] = eo.Tier(Path(index_root), Path(doc_root))
     _W["chem"] = eo.Chemistry(np.load(bits_path))
+    _W["members"] = np.load(member_path) if member_path else None
 
 
 def _score_window(task):
@@ -70,14 +113,26 @@ def _score_window(task):
             return m, [], None
         rows = np.arange(lo, hi)
         doc = np.asarray(tier.lsid[lo:hi], np.float64) + np.asarray(tier.lpmid[lo:hi], np.float64)
+        if p.get("stress_ik") and m in p["stress_ik"] and p.get("stress_cap") is not None:   # panel only
+            ans = np.asarray(tier.ik[lo:hi]) == str(p["stress_ik"][m]).encode()
+            doc[ans] = np.minimum(doc[ans], float(p["stress_cap"]))
+        members = _W.get("members") if p.get("np_window") else None
+        mem = is_member(h14(np.asarray(tier.ik[lo:hi])), members) if members is not None else None
         if len(rows) > p["max_window"]:
-            keep = np.sort(np.argsort(-doc, kind="stable")[: p["max_window"]])
+            keep = np.argsort(-doc, kind="stable")[: p["max_window"]]
+            if mem is not None:                        # natural products are never cut for lack of documentation
+                keep = np.union1d(keep, np.flatnonzero(mem))
+            keep = np.sort(keep)
             rows, doc = rows[keep], doc[keep]
+            mem = mem[keep] if mem is not None else None
         # stage 1: ECFP4-block score of every row; stage 2: full fingerprints for the n_partial best by it plus the
         # n_docpre best-documented (panel: all answers kept at 2,000 + 400 while fingerprinting 27 % of the rows)
         z_e = z[chem.sel_e]
         part = np.array([chem.partial(tier.smiles(int(r)), z_e) for r in rows])
         sel = set(np.argsort(-part, kind="stable")[: p["n_partial"]].tolist()) | set(np.argsort(-doc, kind="stable")[: p["n_docpre"]].tolist())
+        if mem is not None and mem.any():              # every member (up to np_full, best by stage 1) fully scored
+            idx = np.flatnonzero(mem)
+            sel |= set(idx[np.argsort(-part[idx], kind="stable")[: p["np_full"]]].tolist())
         sel = np.array(sorted(sel), dtype=np.int64)
         sc = np.full(len(sel), np.nan)
         for i, j in enumerate(sel):
@@ -93,7 +148,11 @@ def _score_window(task):
             return m, [], None
         zs = (sc - ref.mean()) / (ref.std() + 1e-9)
         total = np.where(np.isfinite(sc), zs + p["w_doc"] * doc[sel], -np.inf)
-        order = np.argsort(-total, kind="stable")[: 4 * p["top_k"]]
+        ranked = np.argsort(-total, kind="stable")
+        order = ranked[: 4 * p["top_k"]].tolist()
+        if mem is not None:                            # the np_keep best members join the shortlist
+            top = set(order)
+            order += [int(i) for i in ranked if mem[sel[i]] and int(i) not in top][: p["np_keep"]]
         return m, [(int(rows[sel[i]]), float(total[i])) for i in order if np.isfinite(total[i])], None
     except Exception as e:  # one odd molecule keeps an empty PubChem part
         return m, [], f"{type(e).__name__}: {str(e)[:120]}"
@@ -300,10 +359,20 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
     tasks = [t for t in tasks if t[0] not in pub]
     bits = Path(foldsafe_dir) / "fp_bits.npy"
     deadline = t0 + p["max_seconds"]
+    np_data, member_path = None, ""
+    if (p["np_table"] or p["np_coconut"]) and (p["np_beta"] or p["np_delta"] or p["np_window"]):
+        try:
+            np_data = load_np(p)
+            report["np_table_keys"], report["np_coconut_keys"], report["np_member_hashes"] = len(np_data[0]), len(np_data[1]), len(np_data[2])
+            if p["np_window"]:
+                member_path = str(Path(output_path).with_name("np_member_hashes.npy"))
+                np.save(member_path, np_data[2])
+        except Exception as e:                 # without the tables the lists are made as without the prior
+            report["np_error"] = f"{type(e).__name__}: {str(e)[:150]}"
     import multiprocessing as mp
     try:
         ctx = mp.get_context("fork")
-        with ctx.Pool(p["workers"], initializer=_init_worker, initargs=(str(index_root), str(doc_root or index_root), str(bits))) as pool:
+        with ctx.Pool(p["workers"], initializer=_init_worker, initargs=(str(index_root), str(doc_root or index_root), str(bits), member_path)) as pool:
             it = pool.imap_unordered(_score_window, tasks, chunksize=1)
             for _ in tasks:
                 left = deadline - time.time()
@@ -322,7 +391,7 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
                         report["error_samples"].append(f"{m}: {err}")
     except Exception as e:                     # pool unavailable: same work in this process
         report["pool_error"] = f"{type(e).__name__}: {str(e)[:120]}"
-        _init_worker(str(index_root), str(doc_root or index_root), str(bits))
+        _init_worker(str(index_root), str(doc_root or index_root), str(bits), member_path)
         for t in tasks:
             if t[0] in pub:
                 continue
@@ -354,6 +423,7 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
             report["s2m_error"] = f"{type(e).__name__}: {str(e)[:150]}"
     scs = {}                                      # molecule -> {metric key: (score, smiles)}
     std = {}                                      # metric key -> standard InChIKey first blocks seen for it
+    hit_keys = {}                                 # molecule -> metric keys with a library hit
     for m in ids:
         try:
             # a library hit adds lib_beta * (cos - lib_c0) to its candidate's score (a hit missing from the PubChem
@@ -372,7 +442,7 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
             for hik, (c, s_) in hits.get(m, {}).items():
                 k = chem.key(s_)
                 if k:
-                    std.setdefault(k, set()).add(str(hik)[:14])
+                    std.setdefault(k, set()).add(str(hik)[:14]); hit_keys.setdefault(m, set()).add(k)
                     bonus = p["lib_beta"] * max(0.0, c - p["lib_c0"])
                     sc[k] = (sc[k][0] + bonus, sc[k][1]) if k in sc else (base + bonus, s_)
             scs[m] = sc
@@ -397,20 +467,14 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
             scs[m] = s2m_fuse(scs[m], v, p["s2m_gamma"], scale)
             report["s2m_molecules"] += 1
         report["s2m_seconds"] = round(time.time() - t0, 1)
-    if (p["np_table"] or p["np_coconut"]) and (p["np_beta"] or p["np_delta"]):
+    if np_data is not None and (p["np_beta"] or p["np_delta"]):
         try:
-            refs, coco = {}, set()
-            if p["np_table"]:
-                npt = pd.read_parquet(p["np_table"], columns=["scorer_key", "n_references"])
-                npt["n_references"] = pd.to_numeric(npt.n_references, errors="coerce").fillna(0.0)
-                refs = npt.groupby("scorer_key").n_references.max().to_dict()
-            if p["np_coconut"]:
-                coco = set(pd.read_csv(p["np_coconut"], usecols=["standard_inchi_key"]).standard_inchi_key.dropna().str.slice(0, 14))
-            report["np_table_keys"], report["np_coconut_keys"] = len(refs), len(coco)
+            refs, coco = np_data[0], np_data[1]
             report["np_members"] = 0
             for m, sc in scs.items():
+                hk = hit_keys.get(m, set()) if p["np_hits"] else set()
                 for k in sc:
-                    if k in refs or std.get(k, set()) & coco:
+                    if k in refs or std.get(k, set()) & coco or k in hk:
                         add = p["np_beta"] + p["np_delta"] * float(np.log1p(refs.get(k, 0.0)))
                         sc[k] = (sc[k][0] + add, sc[k][1]); report["np_members"] += 1
         except Exception as e:                 # without the tables the lists stay as they are
