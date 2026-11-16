@@ -11,7 +11,7 @@ Panel class 2 (the answer's spectra hidden from the library search); cached five
 candidates (as experiments/c1_panel.py); no spec2mol (its saved scores cover only the earlier shortlists).
 
 usage: c1_window_lowdoc.py NATURAL_PRODUCTS_PARQUET COCONUT_CSV [--caps=none,4,0] [--beta=3] [--w_doc=0.25] [--window_only=1]
-       [--coconut_extra=1] [--lib_beta=4] [--frag=LAMBDA:TOL] [--npl=ETA] [--view=c1] [--lib_first=T] [--dump=PATH] [--short_n=100] [--np_keep=50] [--n_partial=2000]
+       [--coconut_extra=1] [--lib_beta=4] [--frag=LAMBDA:TOL] [--npl=ETA] [--view=c1] [--lib_first=T] [--dump=PATH] [--short_n=100] [--np_keep=50] [--n_partial=2000] [--logits=both,merged,single,w0.75,prob]
 (--view=c1: the class-1 view - only the queries' own library left out of the library search, nothing hidden)
 """
 from __future__ import annotations
@@ -44,8 +44,25 @@ if __name__ == "__main__":
     from rdkit import Chem
     std = {m: Chem.MolToInchiKey(Chem.MolFromSmiles(s))[:14] for m, s in truth.items()}
     zl = np.load(art / "panel_logits_foldsafe.npz")
-    ens = np.mean([0.5 * (zl[f"single{k}"].astype(np.float64) + zl[f"merged{k}"].astype(np.float64)) for k in range(5)], axis=0)
-    cached = {str(k): ens[i] for i, k in enumerate(zl["keys"])}
+
+    def ensemble(mode: str) -> np.ndarray:
+        """Molecule logits from the five fold models: 'both' (0.5 single + 0.5 merged views, as the pipeline),
+        'single', 'merged', 'wX' (X x merged + (1 - X) x single), 'prob' (both views averaged as probabilities)."""
+        S = [zl[f"single{k}"].astype(np.float64) for k in range(5)]
+        M = [zl[f"merged{k}"].astype(np.float64) for k in range(5)]
+        if mode == "single":
+            return np.mean(S, axis=0)
+        if mode == "merged":
+            return np.mean(M, axis=0)
+        if mode.startswith("w"):
+            w = float(mode[1:])
+            return np.mean([w * m + (1 - w) * s_ for s_, m in zip(S, M)], axis=0)
+        if mode == "prob":
+            p_ = np.mean([1 / (1 + np.exp(-x)) for x in S + M], axis=0).clip(1e-6, 1 - 1e-6)
+            return np.log(p_ / (1 - p_))
+        return np.mean([0.5 * (s_ + m) for s_, m in zip(S, M)], axis=0)
+    logit_modes = args.get("logits", "both").split(",")
+    cached = {str(k): v for k, v in zip(zl["keys"], ensemble(logit_modes[0]))}
     # memoise the slow parts that do not change between runs: metric keys and the library search
     key0, memo = edit_overlay.Chemistry.key, {}
     edit_overlay.Chemistry.key = lambda self, s_: memo[s_] if s_ in memo else memo.setdefault(s_, key0(self, s_))
@@ -66,7 +83,11 @@ if __name__ == "__main__":
     print(f"{'class-1 view' if args.get('view') == 'c1' else 'class 2'}, C1 (w_doc {w_doc}) + {beta} x natural-product membership "
           f"(library-hit weight {base['lib_beta']}); answer documentation capped inside the window stage")
     variants = (("C1 + bonus", dict(np_window=0)), ("C1 + bonus + NP-aware window", dict(np_window=1)))
-    for cap in caps:
+    runs = [(mode, cap) for mode in logit_modes for cap in caps]
+    for mode, cap in runs:
+        cached.clear(); cached.update({str(k): v for k, v in zip(zl["keys"], ensemble(mode))})
+        if len(logit_modes) > 1:
+            print(f"  logits: {mode}", flush=True)
         for name, extra in variants[1:] if args.get("window_only") == "1" else variants:
             out = art / "c1_window_lowdoc_sub.csv"
             view_c1 = args.get("view") == "c1"
