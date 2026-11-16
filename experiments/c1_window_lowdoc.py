@@ -11,7 +11,8 @@ Panel class 2 (the answer's spectra hidden from the library search); cached five
 candidates (as experiments/c1_panel.py); no spec2mol (its saved scores cover only the earlier shortlists).
 
 usage: c1_window_lowdoc.py NATURAL_PRODUCTS_PARQUET COCONUT_CSV [--caps=none,4,0] [--beta=3] [--w_doc=0.25] [--window_only=1]
-       [--coconut_extra=1] [--lib_beta=4] [--frag=LAMBDA:TOL] [--npl=ETA]
+       [--coconut_extra=1] [--lib_beta=4] [--frag=LAMBDA:TOL] [--npl=ETA] [--view=c1]
+(--view=c1: the class-1 view - only the queries' own library left out of the library search, nothing hidden)
 """
 from __future__ import annotations
 
@@ -57,14 +58,18 @@ if __name__ == "__main__":
     if "frag" in args:
         lam, _, tol = args["frag"].partition(":")
         base.update(frag_lambda=float(lam), frag_tol=float(tol or 0.01))
-    print(f"class 2, C1 (w_doc {w_doc}) + {beta} x natural-product membership; answer documentation capped inside the window stage")
+    print(f"{'class-1 view' if args.get('view') == 'c1' else 'class 2'}, C1 (w_doc {w_doc}) + {beta} x natural-product membership "
+          f"(library-hit weight {base['lib_beta']}); answer documentation capped inside the window stage")
     variants = (("C1 + bonus", dict(np_window=0)), ("C1 + bonus + NP-aware window", dict(np_window=1)))
     for cap in caps:
         for name, extra in variants[1:] if args.get("window_only") == "1" else variants:
             out = art / "c1_window_lowdoc_sub.csv"
+            view_c1 = args.get("view") == "c1"
+            pp = dict(base, stress_cap=cap, **extra, **({"exclude_libs": ("enveda-np-examples",)} if view_c1 else {}))
             rep = c1_pipeline.run(test_path, DATA / "train.parquet", EXT / "pubchem_prior" / "casmi26-pubchem-tier", EXT / "foldsafe",
-                                  EXT / "v4g" / "casmi26-v4b-models" / "code" / "casmi", out, None, dict(base, stress_cap=cap, **extra),
-                                  hide_lib={m: {std[m]} for m in std}, logits_fn=cached.get, doc_root=EXT / "pubchem_prior")
+                                  EXT / "v4g" / "casmi26-v4b-models" / "code" / "casmi", out, None, pp,
+                                  hide_lib=None if view_c1 else {m: {std[m]} for m in std}, logits_fn=cached.get,
+                                  doc_root=EXT / "pubchem_prior")
             sub = pd.read_csv(out, dtype=str, keep_default_na=False)
             print(f"  doc cap {str(cap):5s} | {name:28s} | MRR {score(sol, sub):.4f} | "
                   + str({k: rep.get(k) for k in ("np_members", "coconut_candidates", "coconut_error", "frag_sd", "frag_molecules", "frag_error", "frag_seconds", "npl_candidates", "npl_error",
