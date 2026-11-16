@@ -626,8 +626,8 @@ def apply(test_path, submission_path, output_path, report_path=None, p=PARAMS, v
     if p.get("dump_state"):
         import pickle
         with open(p["dump_state"], "wb") as fh:
-            pickle.dump({b: dict(top=st["top"], cand_keys=st["cand_keys"], scored=[(x[0], x[2], x[3]) for x in st["scored"]])
-                         for b, st in state.items()}, fh)
+            pickle.dump({b: dict(top=st["top"], cand_keys=st["cand_keys"], scored=[(x[0], x[2], x[3]) for x in st["scored"]],
+                                 smiles={x[2]: x[1] for x in st["scored"]}) for b, st in state.items()}, fh)
     for b, st in state.items():         # pass 3: insert the best products into the top max_rank slots
         try:
             items = st["scored"] if p["rel_exclude_nb"] else merge_sources(st["scored"], p["agree_bonus"])
