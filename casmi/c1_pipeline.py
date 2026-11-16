@@ -60,6 +60,9 @@ PARAMS = dict(ppm=10.0, w_doc=0.25, max_window=20000, n_partial=2000, n_docpre=4
               # optional score-level fusion of sanpier's spectrum model over each whole shortlist (neural_bundle's
               # Scorer; trained on all of train.parquet, so not testable on the panel): + san_gamma x score / pooled sd
               san_gamma=0.0,
+              # optional natural-product likeness (Ertl et al. 2008; RDKit Contrib NP_Score, public model): + npl_eta x
+              # the candidate's NP-likeness (panel: answers 1.29 on average, other candidates -0.07). Off unless > 0
+              npl_eta=0.0,
               # panel only: the answer's documentation capped at stress_cap inside the window stage (stress_ik:
               # molecule -> the answer's standard InChIKey first block), the a7 lesson applied to every cut
               stress_ik=None, stress_cap=None)
@@ -613,6 +616,26 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
                         sc[k] = (sc[k][0] + add, sc[k][1]); report["np_members"] += 1
         except Exception as e:                 # without the tables the lists stay as they are
             report["np_error"] = f"{type(e).__name__}: {str(e)[:150]}"
+    if p["npl_eta"] > 0:                         # natural-product likeness of every candidate
+        try:
+            import os as _os
+            import sys as _sys
+            from rdkit import Chem, RDConfig, RDLogger
+            RDLogger.DisableLog("rdApp.*")
+            _sys.path.insert(0, _os.path.join(RDConfig.RDContribDir, "NP_Score"))
+            import npscorer
+            npmodel, npl_cache = npscorer.readNPModel(), {}
+
+            def npl(s_):
+                if s_ not in npl_cache:
+                    mol = Chem.MolFromSmiles(s_)
+                    npl_cache[s_] = float(npscorer.scoreMol(mol, npmodel)) if mol is not None else 0.0
+                return npl_cache[s_]
+            for m, sc in scs.items():
+                scs[m] = {k: (val + p["npl_eta"] * npl(s_), s_) for k, (val, s_) in sc.items()}
+            report["npl_candidates"] = len(npl_cache)
+        except Exception as e:                 # without the model the lists stay as they are
+            report["npl_error"] = f"{type(e).__name__}: {str(e)[:150]}"
     if p["neural_bundle"] and p["san_gamma"] > 0:  # sanpier's model over each whole shortlist (score level)
         try:
             import sys as _sys

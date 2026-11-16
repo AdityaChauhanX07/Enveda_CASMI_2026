@@ -15,7 +15,8 @@ usage: python tools/build_c1_notebook.py OUT_DIR [--edit [--support-gate | --sup
  --coco: COCONUT structures missing from the PubChem windows join them; --libbeta=L: library-hit weight L (default 4);
  --frag=L[:TOL]: fragment explanation at weight L (match tolerance TOL Da, default 0.01); --slug=NAME: kernel name override;
  --library-only: probe kernel casmi26-c1lib-probe - lists of train.parquet library hits (cosine >= 0.5) only, no overlays;
- --san=G: sanpier's spectrum model fused at score level over each whole shortlist at weight G (pooled scale))
+ --san=G: sanpier's spectrum model fused at score level over each whole shortlist at weight G (pooled scale);
+ --npl=E: natural-product likeness (RDKit Contrib NP_Score) at weight E)
 """
 from __future__ import annotations
 
@@ -118,7 +119,7 @@ def cell(kind: str, text: str) -> dict:
 def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = False, np_prior: bool = False,
           np_window: bool = False, w_doc: float | None = None, beta: float | None = None, coco: bool = False,
           lib_beta: float | None = None, slug: str | None = None, frag: str | None = None, library_only: bool = False,
-          san: float | None = None) -> Path:
+          san: float | None = None, npl: float | None = None) -> Path:
     modules = {f"v4/{n}.py": (V4 / f"{n}.py").read_text() for n in ("chem", "spectra", "fpnet")}
     for n in ("edit_overlay", "c1_pipeline", "fragments"):
         modules[f"{n}.py"] = (ROOT / "casmi" / f"{n}.py").read_text()
@@ -143,6 +144,10 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
         run_extra += f", san_gamma={float(san)!r}"
         extra += (f"- **Spectrum model (sanpier/casmi-spectrum-model-v1, training code public):** its score joins each whole "
                   f"shortlist at weight {float(san)} (pooled scale).\n")
+    if npl:
+        run_extra += f", npl_eta={float(npl)!r}"
+        extra += (f"- **Natural-product likeness** (Ertl et al. 2008, RDKit Contrib NP_Score): + {float(npl)} x the "
+                  "candidate's score.\n")
     if library_only:
         run_extra += ", library_only=1, lib_hit=0.5"
         extra += "- **Probe:** lists hold only spectral-library hits (cosine >= 0.5, best first); no PubChem stage, no overlays.\n"
@@ -206,4 +211,5 @@ if __name__ == "__main__":
                            slug=next((a.split("=")[1] for a in sys.argv if a.startswith("--slug=")), None),
                            frag=next((a.split("=")[1] for a in sys.argv if a.startswith("--frag=")), None),
                            library_only="--library-only" in sys.argv,
-                           san=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--san=")), None)))
+                           san=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--san=")), None),
+                           npl=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--npl=")), None)))

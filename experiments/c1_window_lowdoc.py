@@ -11,7 +11,7 @@ Panel class 2 (the answer's spectra hidden from the library search); cached five
 candidates (as experiments/c1_panel.py); no spec2mol (its saved scores cover only the earlier shortlists).
 
 usage: c1_window_lowdoc.py NATURAL_PRODUCTS_PARQUET COCONUT_CSV [--caps=none,4,0] [--beta=3] [--w_doc=0.25] [--window_only=1]
-       [--coconut_extra=1] [--lib_beta=4] [--frag=LAMBDA:TOL]
+       [--coconut_extra=1] [--lib_beta=4] [--frag=LAMBDA:TOL] [--npl=ETA]
 """
 from __future__ import annotations
 
@@ -52,6 +52,8 @@ if __name__ == "__main__":
     c1_pipeline.library_hits = lambda test, train_path, p, hide=None: hit_memo.setdefault("h", hits0(test, train_path, p, hide))
     base = dict(np_table=sys.argv[1], np_coconut=sys.argv[2], np_beta=beta, stress_ik=std, w_doc=w_doc,
                 np_coconut_extra=int(args.get("coconut_extra", 0)), lib_beta=float(args.get("lib_beta", 4.0)))
+    if "npl" in args:
+        base.update(npl_eta=float(args["npl"]))
     if "frag" in args:
         lam, _, tol = args["frag"].partition(":")
         base.update(frag_lambda=float(lam), frag_tol=float(tol or 0.01))
@@ -65,5 +67,5 @@ if __name__ == "__main__":
                                   hide_lib={m: {std[m]} for m in std}, logits_fn=cached.get, doc_root=EXT / "pubchem_prior")
             sub = pd.read_csv(out, dtype=str, keep_default_na=False)
             print(f"  doc cap {str(cap):5s} | {name:28s} | MRR {score(sol, sub):.4f} | "
-                  + str({k: rep.get(k) for k in ("np_members", "coconut_candidates", "coconut_error", "frag_sd", "frag_molecules", "frag_error", "frag_seconds",
+                  + str({k: rep.get(k) for k in ("np_members", "coconut_candidates", "coconut_error", "frag_sd", "frag_molecules", "frag_error", "frag_seconds", "npl_candidates", "npl_error",
                                                  "errors", "error_samples", "np_error", "pubchem_seconds", "seconds")}), flush=True)
