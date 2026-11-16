@@ -4,9 +4,9 @@ Inputs: the competition data; our PubChem index (Kaggle kernel output of casmi26
 PubChem's primary files by tools/build_pubchem_index.py); the five fold-safe FPNets (dmitriigluzdov/
 casmi26-fold-safe-fpnet, training code public); the host's RDKit wheel. The FPNet architecture / inference code
 (Ahmed Berat Özer, Apache-2.0) and our modules are embedded in the notebook.
-Cells: setup -> C1 lists (casmi/c1_pipeline.py) -> networking -> library consistency -> guarded edit overlay.
+Cells: setup -> C1 lists (casmi/c1_pipeline.py) -> networking -> library consistency [-> guarded edit overlay with --edit].
 
-usage: python tools/build_c1_notebook.py OUT_DIR [--support-gate | --support-rerank] [--neural]
+usage: python tools/build_c1_notebook.py OUT_DIR [--edit [--support-gate | --support-rerank]] [--neural]
 (--neural: separate kernel casmi26-c1n-compliant-neural with sanpier's spectrum model fused at rank level)
 """
 from __future__ import annotations
@@ -30,8 +30,8 @@ Every input of this notebook can be regenerated from public code and permitted d
 - **Scoring:** the five fold-safe FPNets of `dmitriigluzdov/casmi26-fold-safe-fpnet` (training code in the
   dataset) on the fingerprint bits they were trained for, plus a documentation prior.
 - **Library hits (class 1):** spectra of the competition's `train.parquet`.
-- **Overlays:** test-set networking, library consistency (candidates whose own reference spectra contradict the
-  query move down) and a guarded edit generator (never at rank 1, one candidate per list).
+- **Overlays:** test-set networking and library consistency (candidates whose own reference spectra contradict
+  the query move down).
 
 Credits: Enveda and the competition hosts for the data; the U.S. National Library of Medicine for PubChem
 (Kim et al., PubChem 2025 update); Ahmed Berat Özer for the FPNet architecture and inference code (Apache-2.0);
@@ -99,7 +99,8 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False) -> Path:
     cells.append(cell("code", add_overlay.CELL.format(src=(ROOT / "casmi" / "network_overlay.py").read_text(), params={"lam": 4.0})))
     cells.append(cell("code", add_overlay.LIB_CELL.format(src=(ROOT / "casmi" / "library_overlay.py").read_text(),
                                                           params=dict(tau=0.5, down=3, min_ref=3))))
-    cells.append(cell("code", add_overlay.EDIT_CELL.format(src=(ROOT / "casmi" / "edit_overlay.py").read_text(), params=edit_params)))
+    if edit_params is not None:       # opt-in: the class-3 generator lost on the LB twice (a7 0.412, a9 0.481 vs 0.485)
+        cells.append(cell("code", add_overlay.EDIT_CELL.format(src=(ROOT / "casmi" / "edit_overlay.py").read_text(), params=edit_params)))
     nb = {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
                                        "language_info": {"name": "python"}}, "nbformat": 4, "nbformat_minor": 5}
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -123,4 +124,4 @@ if __name__ == "__main__":
         params.update(sup_gate=1, sup_sigma=0.6)
     if "--support-rerank" in sys.argv:
         params.update(sup_beta=1.0, sup_sigma=0.7)
-    print("written", build(Path(sys.argv[1]), params, neural="--neural" in sys.argv))
+    print("written", build(Path(sys.argv[1]), params if "--edit" in sys.argv else None, neural="--neural" in sys.argv))
