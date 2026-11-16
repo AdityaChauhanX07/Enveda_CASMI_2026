@@ -46,6 +46,10 @@ PARAMS = dict(ppm=10.0, w_doc=0.25, max_window=20000, n_partial=2000, n_docpre=4
               # match is never outranked by membership alone (panel, class-1 view with the answer not a member, bonus 3:
               # 0.520 -> 0.814; with the answer a member and on class 2 within 0.008)
               np_hits=1,
+              # np_coconut_extra 1: COCONUT structures missing from the PubChem window (by InChIKey first block; 25.6 k
+              # of 459 k in range are not in our index) join it as candidates without documentation (class 2 is "in
+              # PubChem or COCONUT"); needs np_coconut
+              np_coconut_extra=0,
               # panel only: the answer's documentation capped at stress_cap inside the window stage (stress_ik:
               # molecule -> the answer's standard InChIKey first block), the a7 lesson applied to every cut
               stress_ik=None, stress_cap=None)
@@ -95,12 +99,49 @@ def load_np(p: dict) -> tuple[dict, set, np.ndarray]:
     return refs, coco, hashes
 
 
-def _init_worker(index_root, doc_root, bits_path, member_path=""):
+ELEMENTS = r"(?:(?:C|H|N|O|P|S|F|Cl|Br|I)\d*)+"   # as tools/build_pubchem_index.py: CHNOPS + halogens
+
+
+def coconut_extra(coconut_csv: str, out_path: str, lo: float = 100.0, hi: float = 1250.0) -> int:
+    """Mass-sorted COCONUT structures (neutral, one component, CHNOPS + halogens, lo-hi Da) saved as arrays for the
+    window stage: mass, InChIKey first block, SMILES blob + offsets. Returns the number of structures."""
+    c = pd.read_csv(coconut_csv, usecols=["canonical_smiles", "standard_inchi_key", "exact_molecular_weight",
+                                          "molecular_formula", "formal_charge"])
+    c = c.dropna(subset=["canonical_smiles", "standard_inchi_key"])
+    c["mass"] = pd.to_numeric(c.exact_molecular_weight, errors="coerce")
+    ok = (c.mass.between(lo, hi) & (pd.to_numeric(c.formal_charge, errors="coerce").fillna(0) == 0)
+          & ~c.canonical_smiles.astype(str).str.contains(".", regex=False)
+          & c.molecular_formula.astype(str).str.fullmatch(ELEMENTS).fillna(False))
+    c = c[ok].assign(ik=c.standard_inchi_key.str.slice(0, 14)).drop_duplicates("ik").sort_values("mass")
+    smi = [s_.encode() for s_ in c.canonical_smiles.astype(str)]
+    off = np.zeros(len(smi) + 1, np.int64); off[1:] = np.cumsum([len(b) for b in smi])
+    np.savez(out_path, mass=c.mass.to_numpy(np.float64), ik=c.ik.to_numpy().astype("S14"), off=off,
+             blob=np.frombuffer(b"".join(smi), np.uint8))
+    return len(c)
+
+
+class CocoExtra:
+    """The saved COCONUT arrays: mass-sorted structures with SMILES and InChIKey first blocks."""
+
+    def __init__(self, path: str):
+        z = np.load(path)
+        self.mass, self.ik, self.off, self.blob = z["mass"], z["ik"], z["off"], z["blob"]
+
+    def window(self, mass: float, ppm: float) -> tuple[int, int]:
+        tol = mass * ppm * 1e-6
+        return int(np.searchsorted(self.mass, mass - tol, "left")), int(np.searchsorted(self.mass, mass + tol, "right"))
+
+    def smiles(self, j: int) -> str:
+        return bytes(self.blob[self.off[j]:self.off[j + 1]]).decode()
+
+
+def _init_worker(index_root, doc_root, bits_path, member_path="", coco_path=""):
     import edit_overlay as eo
     _one_thread(_W)
     _W["tier"] = eo.Tier(Path(index_root), Path(doc_root))
     _W["chem"] = eo.Chemistry(np.load(bits_path))
     _W["members"] = np.load(member_path) if member_path else None
+    _W["coco"] = CocoExtra(coco_path) if coco_path else None
 
 
 def _score_window(task):
@@ -153,7 +194,19 @@ def _score_window(task):
         if mem is not None:                            # the np_keep best members join the shortlist
             top = set(order)
             order += [int(i) for i in ranked if mem[sel[i]] and int(i) not in top][: p["np_keep"]]
-        return m, [(int(rows[sel[i]]), float(total[i])) for i in order if np.isfinite(total[i])], None
+        out = [(int(rows[sel[i]]), float(total[i])) for i in order if np.isfinite(total[i])]
+        cx = _W.get("coco")
+        if cx is not None and p.get("np_coconut_extra"):   # COCONUT structures the PubChem window lacks: row -1 - j
+            a, b = cx.window(mass, p["ppm"])
+            if b > a:
+                have = set(np.asarray(tier.ik[lo:hi]).tolist())
+                for j in range(a, b):
+                    if bytes(cx.ik[j]) in have:
+                        continue
+                    f = chem.fingerprint(cx.smiles(j))
+                    if f is not None:
+                        out.append((-1 - j, float((float(f @ z) - ref.mean()) / (ref.std() + 1e-9))))
+        return m, out, None
     except Exception as e:  # one odd molecule keeps an empty PubChem part
         return m, [], f"{type(e).__name__}: {str(e)[:120]}"
 
@@ -369,10 +422,19 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
                 np.save(member_path, np_data[2])
         except Exception as e:                 # without the tables the lists are made as without the prior
             report["np_error"] = f"{type(e).__name__}: {str(e)[:150]}"
+    coco_path, coco = "", None
+    if p["np_coconut_extra"] and p["np_coconut"]:
+        try:
+            coco_path = str(Path(output_path).with_name("coconut_extra.npz"))
+            report["coconut_structures"] = coconut_extra(p["np_coconut"], coco_path)
+            coco = CocoExtra(coco_path)
+        except Exception as e:                 # without them the windows hold PubChem only
+            coco_path, coco = "", None
+            report["coconut_error"] = f"{type(e).__name__}: {str(e)[:150]}"
     import multiprocessing as mp
     try:
         ctx = mp.get_context("fork")
-        with ctx.Pool(p["workers"], initializer=_init_worker, initargs=(str(index_root), str(doc_root or index_root), str(bits), member_path)) as pool:
+        with ctx.Pool(p["workers"], initializer=_init_worker, initargs=(str(index_root), str(doc_root or index_root), str(bits), member_path, coco_path)) as pool:
             it = pool.imap_unordered(_score_window, tasks, chunksize=1)
             for _ in tasks:
                 left = deadline - time.time()
@@ -391,7 +453,7 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
                         report["error_samples"].append(f"{m}: {err}")
     except Exception as e:                     # pool unavailable: same work in this process
         report["pool_error"] = f"{type(e).__name__}: {str(e)[:120]}"
-        _init_worker(str(index_root), str(doc_root or index_root), str(bits), member_path)
+        _init_worker(str(index_root), str(doc_root or index_root), str(bits), member_path, coco_path)
         for t in tasks:
             if t[0] in pub:
                 continue
@@ -431,9 +493,16 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
             # 0.825 -> 0.815 (false hits), class-1 view 0.825 -> 0.877; putting hits >= 0.75 first: 0.716 / 0.926
             sc = {}
             for r, v in pub.get(m, []):
-                s_ = tier.smiles(r); k = chem.key(s_)
+                if r < 0:                          # a COCONUT structure the PubChem window lacked
+                    if coco is None:
+                        continue
+                    s_, ik_ = coco.smiles(-1 - r), bytes(coco.ik[-1 - r]).decode()
+                    report["coconut_candidates"] = report.get("coconut_candidates", 0) + 1
+                else:
+                    s_, ik_ = tier.smiles(r), bytes(tier.ik[r]).decode()
+                k = chem.key(s_)
                 if k:
-                    std.setdefault(k, set()).add(bytes(tier.ik[r]).decode())
+                    std.setdefault(k, set()).add(ik_)
                 if k and k not in sc:
                     sc[k] = (v, s_)
             base = min(v for v, _ in sc.values()) if sc else 0.0

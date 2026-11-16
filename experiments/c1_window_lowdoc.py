@@ -11,6 +11,7 @@ Panel class 2 (the answer's spectra hidden from the library search); cached five
 candidates (as experiments/c1_panel.py); no spec2mol (its saved scores cover only the earlier shortlists).
 
 usage: c1_window_lowdoc.py NATURAL_PRODUCTS_PARQUET COCONUT_CSV [--caps=none,4,0] [--beta=3] [--w_doc=0.25] [--window_only=1]
+       [--coconut_extra=1] [--lib_beta=4]
 """
 from __future__ import annotations
 
@@ -49,7 +50,8 @@ if __name__ == "__main__":
     edit_overlay.Chemistry.key = lambda self, s_: memo[s_] if s_ in memo else memo.setdefault(s_, key0(self, s_))
     hits0, hit_memo = c1_pipeline.library_hits, {}
     c1_pipeline.library_hits = lambda test, train_path, p, hide=None: hit_memo.setdefault("h", hits0(test, train_path, p, hide))
-    base = dict(np_table=sys.argv[1], np_coconut=sys.argv[2], np_beta=beta, stress_ik=std, w_doc=w_doc)
+    base = dict(np_table=sys.argv[1], np_coconut=sys.argv[2], np_beta=beta, stress_ik=std, w_doc=w_doc,
+                np_coconut_extra=int(args.get("coconut_extra", 0)), lib_beta=float(args.get("lib_beta", 4.0)))
     print(f"class 2, C1 (w_doc {w_doc}) + {beta} x natural-product membership; answer documentation capped inside the window stage")
     variants = (("C1 + bonus", dict(np_window=0)), ("C1 + bonus + NP-aware window", dict(np_window=1)))
     for cap in caps:
@@ -60,4 +62,5 @@ if __name__ == "__main__":
                                   hide_lib={m: {std[m]} for m in std}, logits_fn=cached.get, doc_root=EXT / "pubchem_prior")
             sub = pd.read_csv(out, dtype=str, keep_default_na=False)
             print(f"  doc cap {str(cap):5s} | {name:28s} | MRR {score(sol, sub):.4f} | "
-                  + str({k: rep.get(k) for k in ("np_members", "errors", "np_error", "pubchem_seconds", "seconds")}), flush=True)
+                  + str({k: rep.get(k) for k in ("np_members", "coconut_structures", "coconut_candidates", "coconut_error",
+                                                 "errors", "error_samples", "np_error", "pubchem_seconds", "seconds")}), flush=True)

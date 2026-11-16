@@ -11,7 +11,9 @@ usage: python tools/build_c1_notebook.py OUT_DIR [--edit [--support-gate | --sup
  --s2m: separate kernel casmi26-c1s-compliant-spec2mol with spec2mol fused into each whole shortlist, gamma S2M_GAMMA;
  --np: natural-product prior NP_BETA for COCONUT / LOTUS / NPAtlas members; with --s2m the kernel is casmi26-c1snp-compliant;
  --npw: also a natural-product-aware window stage (members never lost to documentation cuts): casmi26-c1snpw-compliant;
- --wdoc=W: documentation weight W (default 0.25; 0 with --s2m --np --npw: casmi26-c1d-compliant-docfree); --beta=B: bonus B)
+ --wdoc=W: documentation weight W (default 0.25; 0 with --s2m --np --npw: casmi26-c1d-compliant-docfree); --beta=B: bonus B;
+ --coco: COCONUT structures missing from the PubChem windows join them; --libbeta=L: library-hit weight L (default 4);
+ --slug=NAME: kernel name override)
 """
 from __future__ import annotations
 
@@ -112,7 +114,8 @@ def cell(kind: str, text: str) -> dict:
 
 
 def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = False, np_prior: bool = False,
-          np_window: bool = False, w_doc: float | None = None, beta: float | None = None) -> Path:
+          np_window: bool = False, w_doc: float | None = None, beta: float | None = None, coco: bool = False,
+          lib_beta: float | None = None, slug: str | None = None) -> Path:
     modules = {f"v4/{n}.py": (V4 / f"{n}.py").read_text() for n in ("chem", "spectra", "fpnet")}
     for n in ("edit_overlay", "c1_pipeline"):
         modules[f"{n}.py"] = (ROOT / "casmi" / f"{n}.py").read_text()
@@ -127,13 +130,19 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
               + ".\n" if np_prior else "")
     if w_doc is not None:
         extra += f"- **Documentation weight:** {w_doc} (default 0.25){' - no documentation prior' if w_doc == 0 else ''}.\n"
+    if coco and np_prior:
+        extra += "- **COCONUT candidates:** COCONUT structures missing from a PubChem mass window join it (no documentation).\n"
+    if lib_beta is not None:
+        extra += f"- **Library-hit weight:** {lib_beta} x (cosine - 0.8) (default 4).\n"
+    run_extra = "".join(f", {k}={v!r}" for k, v in (("w_doc", w_doc), ("lib_beta", lib_beta)) if v is not None)
+    run_extra += ", np_coconut_extra=1" if (coco and np_prior) else ""
     credit = " and spec2mol" if s2m else ""
     credit += ("; COCONUT (Chandrasekhar et al., NAR 2025; CC0), the LOTUS initiative (Rutz et al., eLife 2022) and NPAtlas "
                "(van Santen et al., NAR 2022)" if np_prior else "")
     intro = INTRO.format(s2m_line=extra, s2m_credit=credit)
     cells = [cell("markdown", intro), cell("code", SETUP.format(modules=modules)), cell("code", RUN.format(neural=neural, s2m_gamma=S2M_GAMMA if s2m else 0.0, np_beta=nb_beta if np_prior else 0.0,
                                                                             np_window=int(np_prior and np_window),
-                                                                            run_extra="" if w_doc is None else f", w_doc={w_doc!r}"))]
+                                                                            run_extra=run_extra))]
     cells.append(cell("code", add_overlay.CELL.format(src=(ROOT / "casmi" / "network_overlay.py").read_text(), params={"lam": 4.0})))
     cells.append(cell("code", add_overlay.LIB_CELL.format(src=(ROOT / "casmi" / "library_overlay.py").read_text(),
                                                           params=dict(tau=0.5, down=3, min_ref=3))))
@@ -142,7 +151,7 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
     nb = {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
                                        "language_info": {"name": "python"}}, "nbformat": 4, "nbformat_minor": 5}
     out_dir.mkdir(parents=True, exist_ok=True)
-    slug = ("casmi26-c1n-compliant-neural" if neural else
+    slug = slug or ("casmi26-c1n-compliant-neural" if neural else
             "casmi26-c1d-compliant-docfree" if (s2m and np_prior and np_window and w_doc == 0) else
             "casmi26-c1snpw-compliant" if (s2m and np_prior and np_window) else
             "casmi26-c1snp-compliant" if (s2m and np_prior) else
@@ -175,4 +184,7 @@ if __name__ == "__main__":
     print("written", build(Path(sys.argv[1]), params if "--edit" in sys.argv else None, neural="--neural" in sys.argv,
                            s2m="--s2m" in sys.argv, np_prior="--np" in sys.argv, np_window="--npw" in sys.argv,
                            w_doc=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--wdoc=")), None),
-                           beta=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--beta=")), None)))
+                           beta=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--beta=")), None),
+                           coco="--coco" in sys.argv,
+                           lib_beta=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--libbeta=")), None),
+                           slug=next((a.split("=")[1] for a in sys.argv if a.startswith("--slug=")), None)))
