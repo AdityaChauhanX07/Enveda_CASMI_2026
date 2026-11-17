@@ -54,6 +54,38 @@ def build(src_nb: Path, out_nb: Path, params: dict) -> None:
 
 
 
+DREAMS_CELL = '''# ── DreaMS analogue support: lists re-ranked by the structures of the query's nearest public spectra (MassSpecGym) ──
+import json, shutil, time, traceback, glob as _glob
+from pathlib import Path as _P
+_DR_SRC = {src!r}
+_DR_PARAMS = {params!r}
+_fast = (not globals().get('PIPELINE_DONE', True)) and (not globals().get('IS_RERUN', False)) and globals().get('COMMIT_MODE') == 'fast'
+_left = 8.5 * 3600 - (time.time() - globals().get('NB_T0', time.time()))
+if _fast or _left < 1500:
+    print('DREAMS OVERLAY: skipped', 'fast commit' if _fast else 'time guard')
+else:
+    _DR_PARAMS.update(max_seconds=min(_DR_PARAMS.get('max_seconds', 2400), _left - 900))
+    try:
+        _p = _P('/kaggle/working/p2s_code/dreams_overlay.py'); _p.parent.mkdir(parents=True, exist_ok=True)
+        _p.write_text(_DR_SRC)
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location('dreams_overlay', _p); _do = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_do)
+        _dd = _P(sorted(_glob.glob('/kaggle/input/**/MassSpecGym_DreaMS_embeddings.npy', recursive=True), key=len)[0]).parent
+        _sub = _P('/kaggle/working/submission.csv'); shutil.copy2(_sub, '/kaggle/working/submission_before_dreams.csv')
+        _rep = _do.apply(COMP / 'test.parquet', '/kaggle/working/submission_before_dreams.csv', _dd,
+                         '/kaggle/working/submission_dreams.csv', '/kaggle/working/dreams_report.json', _DR_PARAMS)
+        _f = pd.read_csv('/kaggle/working/submission_dreams.csv', dtype=str, keep_default_na=False)
+        assert _f.molecule_id.tolist() == SAMPLE_IDS and _f.smiles.str.split(';').map(len).between(1, 25).all()
+        shutil.copy2('/kaggle/working/submission_dreams.csv', _sub)
+        print('DREAMS OVERLAY:', json.dumps(_rep))
+    except Exception:
+        traceback.print_exc()
+        if _P('/kaggle/working/submission_before_dreams.csv').is_file():
+            shutil.copy2('/kaggle/working/submission_before_dreams.csv', '/kaggle/working/submission.csv')
+        print('DREAMS OVERLAY: failed, previous answers kept')
+'''
+
+
 LIB_CELL = '''# ── Library-consistency overlay: candidates whose public reference spectra contradict the query move down ──
 import json, shutil, time, traceback
 from pathlib import Path as _P

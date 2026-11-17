@@ -18,7 +18,8 @@ usage: python tools/build_c1_notebook.py OUT_DIR [--edit [--support-gate | --sup
  --san=G: sanpier's spectrum model fused at score level over each whole shortlist at weight G (pooled scale);
  --npl=E: natural-product likeness (RDKit Contrib NP_Score) at weight E;
  --libfirst=T: library hits with cosine >= T lead their lists;
- --set=name=value[,name=value...]: any other c1_pipeline parameter (numbers), e.g. --set=short_n=150,np_keep=150)
+ --set=name=value[,name=value...]: any other c1_pipeline parameter (numbers), e.g. --set=short_n=150,np_keep=150;
+ --dreams=L: DreaMS analogue-support overlay (MassSpecGym neighbours) at weight L, after the library overlay)
 """
 from __future__ import annotations
 
@@ -121,7 +122,8 @@ def cell(kind: str, text: str) -> dict:
 def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = False, np_prior: bool = False,
           np_window: bool = False, w_doc: float | None = None, beta: float | None = None, coco: bool = False,
           lib_beta: float | None = None, slug: str | None = None, frag: str | None = None, library_only: bool = False,
-          san: float | None = None, npl: float | None = None, lib_first: float | None = None, extra_set: str | None = None) -> Path:
+          san: float | None = None, npl: float | None = None, lib_first: float | None = None, extra_set: str | None = None,
+          dreams: float | None = None) -> Path:
     modules = {f"v4/{n}.py": (V4 / f"{n}.py").read_text() for n in ("chem", "spectra", "fpnet")}
     for n in ("edit_overlay", "c1_pipeline", "fragments"):
         modules[f"{n}.py"] = (ROOT / "casmi" / f"{n}.py").read_text()
@@ -150,6 +152,9 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
         run_extra += f", npl_eta={float(npl)!r}"
         extra += (f"- **Natural-product likeness** (Ertl et al. 2008, RDKit Contrib NP_Score): + {float(npl)} x the "
                   "candidate's score.\n")
+    if dreams:
+        extra += (f"- **DreaMS analogue support** (public DreaMS model; MassSpecGym spectra): each list is re-ranked by the "
+                  f"structures of the query's nearest public spectra, weight {float(dreams)}.\n")
     if lib_first:
         run_extra += f", lib_first={float(lib_first)!r}"
         extra += f"- **Strong library matches first:** hits with cosine >= {float(lib_first)} lead their lists.\n"
@@ -176,6 +181,9 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
         cells.append(cell("code", add_overlay.CELL.format(src=(ROOT / "casmi" / "network_overlay.py").read_text(), params={"lam": 4.0})))
         cells.append(cell("code", add_overlay.LIB_CELL.format(src=(ROOT / "casmi" / "library_overlay.py").read_text(),
                                                               params=dict(tau=0.5, down=3, min_ref=3))))
+    if dreams:                        # analogue support from public spectra (panel, documentation-free lists: +0.026)
+        cells.append(cell("code", add_overlay.DREAMS_CELL.format(src=(ROOT / "casmi" / "dreams_overlay.py").read_text(),
+                                                                 params=dict(lam=float(dreams)))))
     if edit_params is not None:       # opt-in: the class-3 generator lost on the LB twice (a7 0.412, a9 0.481 vs 0.485)
         cells.append(cell("code", add_overlay.EDIT_CELL.format(src=(ROOT / "casmi" / "edit_overlay.py").read_text(), params=edit_params)))
     nb = {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
@@ -196,7 +204,8 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
                                                          # else of this dataset is loaded
                                                          + (["dmitriigluzdov/casmi26-attributed-v4g-reproduction-assets"] if s2m else [])
                                                          + (["dmitriigluzdov/casmi26-natural-product-knowledge-table",
-                                                             "pri2si17/coconut-natural-products-2026-09"] if np_prior else []),
+                                                             "pri2si17/coconut-natural-products-2026-09"] if np_prior else [])
+                                                         + (["hengck23/hengck23-dreams-enveda-casmi26"] if dreams else []),
             "competition_sources": ["enveda-CASMI26-molecule-id-mass-spectra"],
             "kernel_sources": ["adityachauhanx/casmi26-pubchem-index-build"], "model_sources": []}
     (out_dir / "kernel-metadata.json").write_text(json.dumps(meta, indent=1))
@@ -223,4 +232,5 @@ if __name__ == "__main__":
                            san=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--san=")), None),
                            npl=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--npl=")), None),
                            lib_first=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--libfirst=")), None),
-                           extra_set=next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--set=")), None)))
+                           extra_set=next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--set=")), None),
+                           dreams=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--dreams=")), None)))
