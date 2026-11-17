@@ -11,7 +11,7 @@ Candidates without analogues get the list mean (neutral). Lists are re-ranked by
 1/(3 + rank) / sd + lambda x zd(forward support, final rule) + rho x zd(reverse score).
 
 usage: dreams_reverse.py MSG_DIR PANEL_EMBED_DIR NEIGHBOURS.json.gz LISTS.csv DUMP.pkl [--view=hidden] [--t=0.6]
-       [--p=4] [--rhos=0,0.25,0.5,1] [--lam=1.5]
+       [--p=4] [--rhos=0,0.25,0.5,1] [--lam=1.5] [--grid=0,0.5,1,1.5 (forward lambdas; prints the lambda x rho grid)]
 """
 from __future__ import annotations
 
@@ -127,6 +127,17 @@ def main() -> None:
     ms = [m for m in ms if m in sup]
     print(f"{lists_path.name} | n {len(ms)} | t {t_min} p {pw:g} | list order {np.mean([rr(m, lists[m]) for m in ms]):.4f} | "
           f"rmax alone {np.mean([rr(m, order(m, rmax[m])) for m in ms]):.4f} | rmean alone {np.mean([rr(m, order(m, rmean[m])) for m in ms]):.4f}")
+    if args.get("grid"):                                # joint forward lambda x reverse rho grid (rmax)
+        for lam_g in [float(x) for x in args.get("grid").split(",")]:
+            res = []
+            for rho in rhos:
+                v = []
+                for m in ms:
+                    b = 1.0 / (3.0 + np.arange(1, len(lists[m]) + 1))
+                    v.append(rr(m, order(m, b / b.std() + lam_g * zd(sup[m]) + rho * zd(rmax[m]))))
+                res.append(f"{rho:g}: {np.mean(v):.4f}")
+            print(f"  grid lambda {lam_g:<4g} + rho x rmax | " + " | ".join(res), flush=True)
+        return
     for name, rev in (("rmax", rmax), ("rmean", rmean)):
         for with_fwd in (False, True):
             res = []

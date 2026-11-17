@@ -17,7 +17,9 @@ all kept 0.880; class 2: 0.662 / 0.640 / 0.618). z_eps damps z(support) in lists
 (s - mean) / (sd + z_eps)): with z_eps 0.01 the best weight is a plateau at 1.25-2 (panel, lambda 1.5: C1k class 2
 0.603 -> 0.653, documentation-heavy 0.824 -> 0.849, class-1 views 0.854 -> 0.862 / 0.842). pos_only: a molecule's
 support comes from its positive-mode spectra when it has any (MassSpecGym holds positive mode only; panel +0.002 to
-+0.010 in every regime). extra_refs: a
++0.010 in every regime). rev_rho > 0 adds reverse support: for each candidate, its analogues among all reference
+structures (Tanimoto >= rev_t, own structure excluded as with noself) and their best DreaMS cosine to the query,
+max of Tanimoto x cosine^rev_p, added as rev_rho x zd(.) (experiments/dreams_reverse.py). extra_refs: a
 glob of further reference embeddings (*_embeddings.npy beside *_meta.parquet with normalized_smiles), e.g. the
 train-library spectra embedded by tools/build_dreams_train_refs.py; neighbours are the k nearest over all references.
 """
@@ -34,7 +36,7 @@ import numpy as np
 import pandas as pd
 
 PARAMS = dict(lam=1.0, k=50, p=4.0, batch=64, chunk=100000, max_seconds=2400, reference="MassSpecGym", extra_refs="",
-              noself=0, self_lib=0.8, z_eps=1e-9, pos_only=0)
+              noself=0, self_lib=0.8, z_eps=1e-9, pos_only=0, rev_rho=0.0, rev_t=0.6, rev_p=4.0)
 
 
 def _model(dreams_dir: Path):
@@ -137,6 +139,26 @@ def apply(test_path, submission_path, dreams_dir, output_path, report_path=None,
             if s_ not in cikc:
                 m_ = Chem.MolFromSmiles(str(s_)); cikc[s_] = Chem.MolToInchiKey(m_)[:14] if m_ is not None else "?"
             return cikc[s_]
+        rev = None
+        if p["rev_rho"] > 0:                            # reverse support: each candidate's analogues among the references
+            uniq, inv = np.unique(ref_smiles.astype(str), return_inverse=True)
+            u_fp = [fp(s_) for s_ in uniq]
+            u_idx = np.array([i for i, f in enumerate(u_fp) if f is not None]); u_fps = [u_fp[i] for i in u_idx]
+            u_ik = np.array([cand_ik(s_) for s_ in uniq], dtype=object)
+            qi = sorted({int(j) for r in rows_of.values() for j in r}); qpos = {j: k for k, j in enumerate(qi)}
+            Qu = q[qi].astype(np.float32)
+            best = np.full((len(qi), len(uniq)), -1.0, np.float32); off = 0
+            for r in refs:
+                for a in range(0, r.shape[0], p["chunk"]):
+                    blk = np.array(r[a:a + p["chunk"]], np.float32)
+                    blk /= np.maximum(np.linalg.norm(blk, axis=1, keepdims=True), 1e-9)
+                    sid = inv[off + a: off + a + len(blk)]; o = np.argsort(sid, kind="stable"); ss = sid[o]
+                    bd = np.flatnonzero(np.r_[True, ss[1:] != ss[:-1]])
+                    red = np.maximum.reduceat((Qu @ blk.T)[:, o], bd, axis=1); cols = ss[bd]
+                    best[:, cols] = np.maximum(best[:, cols], red)
+                off += r.shape[0]
+            rev = dict(best=np.clip(best, 0.0, 1.0), qpos=qpos, u_idx=u_idx, u_fps=u_fps, u_ik=u_ik)
+            report["reverse_structures"] = int(len(uniq)); report["reverse_seconds"] = round(time.time() - t0, 1)
         out = []
         for m, smi in zip(sub.molecule_id, sub.smiles):
             cand = smi.split(";")
@@ -166,7 +188,26 @@ def apply(test_path, submission_path, dreams_dir, output_path, report_path=None,
                 sup /= max(len(rows_of[m]), 1)
                 base = 1.0 / (3.0 + np.arange(1, len(cand) + 1))
                 z = (sup - sup.mean()) / (sup.std() + p["z_eps"])   # z_eps damps lists with no spread
-                order = np.argsort(-(base / base.std() + p["lam"] * z), kind="stable")
+                score = base / base.std() + p["lam"] * z
+                if rev is not None:                     # + rho x zd(best analogue: Tanimoto x cosine^p), own spectra excluded
+                    cs = rev["best"][[rev["qpos"][int(j)] for j in rows_of[m]]].mean(0)
+                    hid = hide.get(m, ()) if hide else ()
+                    rv = np.full(len(cand), np.nan)
+                    for t, f in enumerate(cfp):
+                        if f is None:
+                            continue
+                        tani = np.array(DataStructs.BulkTanimotoSimilarity(f, rev["u_fps"]), np.float32)
+                        sel = np.flatnonzero(tani >= p["rev_t"])
+                        if not len(sel):
+                            continue
+                        js = rev["u_idx"][sel]; own = cand_ik(cand[t])
+                        okm = np.array([(rev["u_ik"][j] != own or own in ok_ik or not ns) and rev["u_ik"][j] not in hid for j in js], bool)
+                        if okm.any():
+                            rv[t] = float((tani[sel][okm] * cs[js[okm]] ** p["rev_p"]).max())
+                    if np.isfinite(rv).any():
+                        rv = np.where(np.isfinite(rv), rv, np.nanmean(rv))
+                        score = score + p["rev_rho"] * (rv - rv.mean()) / (rv.std() + p["z_eps"])
+                order = np.argsort(-score, kind="stable")
                 new = [cand[i] for i in order]
                 ks = set((keep or {}).get(m, ()))
                 n_head = next((i for i, c in enumerate(cand) if c not in ks), len(cand)) if ks else 0
