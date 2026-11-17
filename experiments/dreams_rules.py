@@ -25,6 +25,19 @@ sys.path.insert(0, str(ROOT))
 from casmi.metric import ik14  # noqa: E402
 
 
+
+_KEYS = Path(__file__).resolve().parents[1] / "artifacts" / "dreams" / "metric_keys.pkl"
+
+
+def _key_cache(smiles, key_fn):
+    """metric keys (RDKit tautomer canonicalisation is slow), cached on disk across runs"""
+    import pickle
+    cache = pickle.load(open(_KEYS, "rb")) if _KEYS.is_file() else {}
+    new = {s_: (key_fn(s_) or "") for s_ in set(smiles) if s_ not in cache}
+    if new:
+        cache.update(new); _KEYS.parent.mkdir(parents=True, exist_ok=True); pickle.dump(cache, open(_KEYS, "wb"))
+    return cache
+
 def rerank(cand: list[str], sup: np.ndarray, lam: float, n_head: int = 0) -> list[str]:
     base = 1.0 / (3.0 + np.arange(1, len(cand) + 1))
     z = (sup - sup.mean()) / (sup.std() + 1e-9)
@@ -47,8 +60,8 @@ def main() -> None:
         tau = float(args.get("lib_first", 0.95))
         for m, h in hits.items():
             leads[m] = {s_ for c, s_ in h.values() if c >= tau}
-    keys: dict[str, str] = {}
-    key = lambda s_: keys[s_] if s_ in keys else keys.setdefault(s_, ik14(s_) or "")
+    keys = _key_cache([s_ for smi in sub.smiles for s_ in smi.split(";")], ik14)
+    key = lambda s_: keys[s_]
     rows = []
     for m, smi in zip(sub.molecule_id, sub.smiles):
         cand = smi.split(";")

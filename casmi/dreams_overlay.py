@@ -7,7 +7,9 @@ dataset) are retrieved by cosine. A candidate's support is the maximum over thos
 spectra. Each list is re-ordered by 1/(3 + rank) / sd + lam x z(support) (z within the list), the form measured on the
 panel (experiments: tools/build_dreams_panel.py; documentation-free C1e lists 0.588 -> 0.614 at lam 1). Lists keep their
 candidates; a failure keeps the input file. keep (molecule -> SMILES): leads that stay on top while they still head the
-list, e.g. C1's strong library matches (lib_first_leads.json), whose answers are usually right already.
+list, e.g. C1's strong library matches (lib_first_leads.json), whose answers are usually right already. extra_refs: a
+glob of further reference embeddings (*_embeddings.npy beside *_meta.parquet with normalized_smiles), e.g. the
+train-library spectra embedded by tools/build_dreams_train_refs.py; neighbours are the k nearest over all references.
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-PARAMS = dict(lam=1.0, k=50, p=4.0, batch=64, chunk=100000, max_seconds=2400, reference="MassSpecGym")
+PARAMS = dict(lam=1.0, k=50, p=4.0, batch=64, chunk=100000, max_seconds=2400, reference="MassSpecGym", extra_refs="")
 
 
 def _model(dreams_dir: Path):
@@ -73,10 +75,32 @@ def apply(test_path, submission_path, dreams_dir, output_path, report_path=None,
         test = pd.read_parquet(test_path).reset_index(drop=True)
         q = embed(test, dreams_dir, p["batch"])
         report["embed_seconds"] = round(time.time() - t0, 1)
-        ref = np.load(dreams_dir / f"{p['reference']}_DreaMS_embeddings.npy", mmap_mode="r")
+        refs = [np.load(dreams_dir / f"{p['reference']}_DreaMS_embeddings.npy", mmap_mode="r")]
         meta = pickle.load(open(dreams_dir / f"{p['reference']}_DreaMS_meta.pkl", "rb"))
-        ref_smiles = np.asarray(meta["normalized_smiles"] if "normalized_smiles" in meta else meta["smiles"], dtype=object)
-        nn_i, nn_s = knn(q, ref, p["k"], p["chunk"])
+        smiles = [np.asarray(meta["normalized_smiles"] if "normalized_smiles" in meta else meta["smiles"], dtype=object)]
+        del meta
+        for f in (sorted(glob.glob(p["extra_refs"], recursive=True)) if p["extra_refs"] else []):
+            try:                                        # extra references: *_embeddings.npy beside *_meta.parquet
+                smiles.append(pd.read_parquet(f.replace("_embeddings.npy", "_meta.parquet"),
+                                              columns=["normalized_smiles"]).normalized_smiles.to_numpy(dtype=object))
+                refs.append(np.load(f, mmap_mode="r"))
+                assert refs[-1].shape[0] == len(smiles[-1]), f
+            except Exception as e:
+                smiles = smiles[:len(refs)]
+                report["extra_ref_error"] = f"{type(e).__name__}: {str(e)[:100]}"
+        nn_i = nn_s = None; off = 0
+        for r in refs:                                  # nearest k over all references, global row numbers
+            i_, s_ = knn(q, r, p["k"], p["chunk"])
+            i_ = np.where(i_ >= 0, i_ + off, -1)
+            if nn_i is None:
+                nn_i, nn_s = i_, s_
+            else:
+                allc, alli = np.concatenate([nn_s, s_], 1), np.concatenate([nn_i, i_], 1)
+                o = np.argsort(-allc, axis=1)[:, :p["k"]]
+                nn_s, nn_i = np.take_along_axis(allc, o, 1), np.take_along_axis(alli, o, 1)
+            off += r.shape[0]
+        ref_smiles = np.concatenate(smiles)
+        report["references"] = int(off)
         report["knn_seconds"] = round(time.time() - t0, 1)
         gen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
         fpc = {}

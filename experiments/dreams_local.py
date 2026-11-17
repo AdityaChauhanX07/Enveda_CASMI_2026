@@ -36,6 +36,19 @@ GEN = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
 _fp, _ik = {}, {}
 
 
+
+_KEYS = Path(__file__).resolve().parents[1] / "artifacts" / "dreams" / "metric_keys.pkl"
+
+
+def _key_cache(smiles, key_fn):
+    """metric keys (RDKit tautomer canonicalisation is slow), cached on disk across runs"""
+    import pickle
+    cache = pickle.load(open(_KEYS, "rb")) if _KEYS.is_file() else {}
+    new = {s_: (key_fn(s_) or "") for s_ in set(smiles) if s_ not in cache}
+    if new:
+        cache.update(new); _KEYS.parent.mkdir(parents=True, exist_ok=True); pickle.dump(cache, open(_KEYS, "wb"))
+    return cache
+
 def fp(s_):
     if s_ not in _fp:
         m_ = Chem.MolFromSmiles(str(s_)); _fp[s_] = GEN.GetFingerprint(m_) if m_ is not None else None
@@ -104,7 +117,7 @@ def main() -> None:
     sub = pd.read_csv(sys.argv[2], dtype=str, keep_default_na=False)
     args = dict(a[2:].split("=", 1) for a in sys.argv[3:] if a.startswith("--") and "=" in a)
     lists = {m: smi.split(";") for m, smi in zip(sub.molecule_id, sub.smiles)}
-    keys = {s_: (metric_key(s_) or "") for cand in lists.values() for s_ in cand}
+    keys = _key_cache([s_ for cand in lists.values() for s_ in cand], metric_key)
     lams = [float(x) for x in args.get("lams", "0,0.5,0.75,1,1.25,1.5").split(",")]
     heads = {}
     if "keep" in args:
