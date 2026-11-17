@@ -93,9 +93,12 @@ def supports(nbd, lists, view="hidden", p=4.0, k=50, noself=False, agg="max", sr
     return out
 
 
+EPS = 1e-9                                           # --eps: damped z = (s - mean) / (sd + eps)
+
+
 def rerank(cand, sup, lam, n_head=0):
     base = 1.0 / (3.0 + np.arange(1, len(cand) + 1))
-    z = (sup - sup.mean()) / (sup.std() + 1e-9)
+    z = (sup - sup.mean()) / (sup.std() + EPS)
     new = [cand[i] for i in np.argsort(-(base / base.std() + lam * z), kind="stable")]
     if n_head:
         head = cand[:n_head]; new = head + [c for c in new if c not in set(head)]
@@ -117,6 +120,8 @@ def main() -> None:
     nbd = json.loads(gzip.decompress(Path(sys.argv[1]).read_bytes()))
     sub = pd.read_csv(sys.argv[2], dtype=str, keep_default_na=False)
     args = dict(a[2:].split("=", 1) for a in sys.argv[3:] if a.startswith("--") and "=" in a)
+    global EPS
+    EPS = float(args.get("eps", 1e-9))
     lists = {m: smi.split(";") for m, smi in zip(sub.molecule_id, sub.smiles)}
     keys = _key_cache([s_ for cand in lists.values() for s_ in cand], metric_key)
     lams = [float(x) for x in args.get("lams", "0,0.5,0.75,1,1.25,1.5").split(",")]

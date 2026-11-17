@@ -13,7 +13,9 @@ a class-2 answer has no public spectra, while wrong candidates that are library 
 own spectra (panel C1e lists, lambda 1: 0.618 -> 0.662; experiments/dreams_local.py). Candidates that are the
 query's spectral-library matches (selfok, cosine >= self_lib) keep their own spectra: a recognised class-1 answer's own
 spectra are its best evidence (panel class-1 view, lambda 1: noself everywhere 0.676, library matches exempt 0.858,
-all kept 0.880; class 2: 0.662 / 0.640 / 0.618). extra_refs: a
+all kept 0.880; class 2: 0.662 / 0.640 / 0.618). z_eps damps z(support) in lists where support barely varies (z =
+(s - mean) / (sd + z_eps)): with z_eps 0.01 the best weight is a plateau at 1.25-2 (panel, lambda 1.5: C1k class 2
+0.603 -> 0.653, documentation-heavy 0.824 -> 0.849, class-1 views 0.854 -> 0.862 / 0.842). extra_refs: a
 glob of further reference embeddings (*_embeddings.npy beside *_meta.parquet with normalized_smiles), e.g. the
 train-library spectra embedded by tools/build_dreams_train_refs.py; neighbours are the k nearest over all references.
 """
@@ -30,7 +32,7 @@ import numpy as np
 import pandas as pd
 
 PARAMS = dict(lam=1.0, k=50, p=4.0, batch=64, chunk=100000, max_seconds=2400, reference="MassSpecGym", extra_refs="",
-              noself=0, self_lib=0.8)
+              noself=0, self_lib=0.8, z_eps=1e-9)
 
 
 def _model(dreams_dir: Path):
@@ -158,7 +160,7 @@ def apply(test_path, submission_path, dreams_dir, output_path, report_path=None,
                             sup[t] += float(prod.max())
                 sup /= max(len(rows_of[m]), 1)
                 base = 1.0 / (3.0 + np.arange(1, len(cand) + 1))
-                z = (sup - sup.mean()) / (sup.std() + 1e-9)
+                z = (sup - sup.mean()) / (sup.std() + p["z_eps"])   # z_eps damps lists with no spread
                 order = np.argsort(-(base / base.std() + p["lam"] * z), kind="stable")
                 new = [cand[i] for i in order]
                 ks = set((keep or {}).get(m, ()))
