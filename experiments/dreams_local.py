@@ -49,9 +49,32 @@ def _key_cache(smiles, key_fn):
         cache.update(new); _KEYS.parent.mkdir(parents=True, exist_ok=True); pickle.dump(cache, open(_KEYS, "wb"))
     return cache
 
+FPKIND = "morgan2"                                   # --fp: similarity used between candidates and neighbour structures
+
+
+def _fp_of(m_):
+    from rdkit.Chem import MACCSkeys
+    if FPKIND == "morgan2":
+        return GEN.GetFingerprint(m_)
+    if FPKIND in ("morgan1", "morgan3"):
+        return rdFingerprintGenerator.GetMorganGenerator(radius=int(FPKIND[-1]), fpSize=2048).GetFingerprint(m_)
+    if FPKIND == "fcfp4":
+        return rdFingerprintGenerator.GetMorganGenerator(
+            radius=2, fpSize=2048, atomInvariantsGenerator=rdFingerprintGenerator.GetMorganFeatureAtomInvGen()).GetFingerprint(m_)
+    if FPKIND == "ap":
+        return rdFingerprintGenerator.GetAtomPairGenerator(fpSize=2048).GetFingerprint(m_)
+    if FPKIND == "tt":
+        return rdFingerprintGenerator.GetTopologicalTorsionGenerator(fpSize=2048).GetFingerprint(m_)
+    if FPKIND == "rdk":
+        return rdFingerprintGenerator.GetRDKitFPGenerator(fpSize=2048, maxPath=6).GetFingerprint(m_)
+    if FPKIND == "maccs":
+        return MACCSkeys.GenMACCSKeys(m_)
+    raise ValueError(FPKIND)
+
+
 def fp(s_):
     if s_ not in _fp:
-        m_ = Chem.MolFromSmiles(str(s_)); _fp[s_] = GEN.GetFingerprint(m_) if m_ is not None else None
+        m_ = Chem.MolFromSmiles(str(s_)); _fp[s_] = _fp_of(m_) if m_ is not None else None
     return _fp[s_]
 
 
@@ -126,8 +149,9 @@ def main() -> None:
     nbd = json.loads(gzip.decompress(Path(sys.argv[1]).read_bytes()))
     sub = pd.read_csv(sys.argv[2], dtype=str, keep_default_na=False)
     args = dict(a[2:].split("=", 1) for a in sys.argv[3:] if a.startswith("--") and "=" in a)
-    global EPS, MODES
+    global EPS, MODES, FPKIND
     EPS = float(args.get("eps", 1e-9))
+    FPKIND = args.get("fp", "morgan2")
     if args.get("posonly") == "1":
         MODES = json.loads((Path(__file__).resolve().parents[1] / "artifacts" / "dreams" / "panel_modes.json").read_text())
     lists = {m: smi.split(";") for m, smi in zip(sub.molecule_id, sub.smiles)}
