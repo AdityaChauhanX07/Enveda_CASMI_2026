@@ -11,7 +11,7 @@ third neural opinion: after the fork's 0.5 z(public) + 0.5 z(ours) blend, neural
 within each molecule like the blend; any failure keeps the fork's own blend.
 
 usage: python tools/build_fork_variant.py BASE_KERNEL_DIR OUT_DIR SLUG [--pop_w=X] [--np_w=X] [--spec_w=X]
-       [--pop_lam=X] [--poolpop_mu=X] [--pop_tau=X] [--pc_np=B] [--s2m=G] [--commit=fast|smoke]
+       [--pop_lam=X] [--poolpop_mu=X] [--pop_tau=X] [--pc_np=B] [--s2m=G] [--w_top=X] [--w_mid=X] [--commit=fast|smoke]
 --pc_np=B: the frozen PubChem channel's prior keeps only natural-product membership (bonus B x POP_LAM)
 """
 from __future__ import annotations
@@ -160,6 +160,10 @@ def main() -> None:
         s = src_all[i]
         if weights.group(0) in s:
             s = replace_once(s, weights.group(0), f"POP_W, SPEC_W, NP_W = {pop_w}, {spec_w}, {np_w}", "fusion weights")
+        if ("w_top" in args or "w_mid" in args) and "CUSTOM = dict(w_top=0.25, w_mid=0.75, rescue=0)" in s:
+            s = replace_once(s, "CUSTOM = dict(w_top=0.25, w_mid=0.75, rescue=0)",
+                             f"CUSTOM = dict(w_top={float(args.get('w_top', 0.25))}, w_mid={float(args.get('w_mid', 0.75))}, rescue=0)",
+                             "consensus weights")
         if "commit" in args and "COMMIT_MODE = 'smoke'" in s:
             s = replace_once(s, "COMMIT_MODE = 'smoke'", f"COMMIT_MODE = '{args['commit']}'", "COMMIT_MODE")
         m = re.search(r"^FROZEN_B64\s*=\s*([^\n]+)", s, re.M)       # the assignment, not a use
@@ -190,7 +194,7 @@ def main() -> None:
     meta.update(id=f"adityachauhanx/{slug}", title=slug.replace("-", " "), code_file=nb_path.name)
     (out / "kernel-metadata.json").write_text(json.dumps(meta, indent=1))
     print("written", out / nb_path.name, "| fusion", (pop_w, spec_w, np_w),
-          {k: args[k] for k in ("pop_lam", "poolpop_mu", "pop_tau", "pc_np", "s2m", "commit") if k in args})
+          {k: args[k] for k in ("pop_lam", "poolpop_mu", "pop_tau", "pc_np", "s2m", "w_top", "w_mid", "commit") if k in args})
 
 
 if __name__ == "__main__":
