@@ -11,8 +11,10 @@ third neural opinion: after the fork's 0.5 z(public) + 0.5 z(ours) blend, neural
 within each molecule like the blend; any failure keeps the fork's own blend.
 
 usage: python tools/build_fork_variant.py BASE_KERNEL_DIR OUT_DIR SLUG [--pop_w=X] [--np_w=X] [--spec_w=X]
-       [--pop_lam=X] [--poolpop_mu=X] [--pop_tau=X] [--pc_np=B] [--s2m=G] [--w_top=X] [--w_mid=X] [--dreams=L] [--commit=fast|smoke]
+       [--pop_lam=X] [--poolpop_mu=X] [--pop_tau=X] [--pc_np=B] [--s2m=G] [--w_top=X] [--w_mid=X] [--n1c=LAM] [--dreams=L] [--commit=fast|smoke]
 --pc_np=B: the frozen PubChem channel's prior keeps only natural-product membership (bonus B x POP_LAM)
+--n1c=LAM: the public in-test network rerank (analyticaobscura's N-1c; LAM 0.35 = the public 0.492 recipe) before the
+           external-library overlay (bases with that overlay, e.g. Fork B)
 """
 from __future__ import annotations
 
@@ -188,6 +190,14 @@ def main() -> None:
         new_cell = {"cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
                     "source": S2M_CELL.replace("__GAMMA__", repr(float(args["s2m"]))).splitlines(keepends=True)}
         cells.insert(idx[0], new_cell)
+    if "n1c" in args:                                    # public in-test network rerank, before the external-library overlay
+        anchor = "# ===== 0.500 APEX OVERLAY"
+        idx = [i for i, c in enumerate(cells) if c["cell_type"] == "code" and "".join(c["source"]).startswith(anchor)]
+        assert len(idx) == 1, f"external-library overlay cell found {len(idx)} times"
+        assert not any("def _n1c(" in "".join(c["source"]) for c in cells), "the base already has the N-1c cell"
+        tmpl = (Path(__file__).resolve().parent / "templates" / "n1c_cell.py.tmpl").read_text()
+        cells.insert(idx[0], {"cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
+                              "source": tmpl.replace("__LAM__", repr(float(args["n1c"]))).splitlines(keepends=True)})
     if "dreams" in args:                                 # analogue-support overlay as the last cell
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import add_overlay
@@ -202,7 +212,7 @@ def main() -> None:
         meta["dataset_sources"] = list(meta.get("dataset_sources", [])) + ["hengck23/hengck23-dreams-enveda-casmi26"]
     (out / "kernel-metadata.json").write_text(json.dumps(meta, indent=1))
     print("written", out / nb_path.name, "| fusion", (pop_w, spec_w, np_w),
-          {k: args[k] for k in ("pop_lam", "poolpop_mu", "pop_tau", "pc_np", "s2m", "w_top", "w_mid", "dreams", "commit") if k in args})
+          {k: args[k] for k in ("pop_lam", "poolpop_mu", "pop_tau", "pc_np", "s2m", "w_top", "w_mid", "n1c", "dreams", "commit") if k in args})
 
 
 if __name__ == "__main__":
