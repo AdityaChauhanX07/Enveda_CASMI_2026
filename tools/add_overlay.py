@@ -112,23 +112,27 @@ else:
                         _keep.setdefault(_m, [_lead[_m]])
         except Exception:
             traceback.print_exc()
-        _libbest = {{}}                  # best library match per molecule (C1 export or the fork's evidence table)
+        _selfok = {{}}                   # candidates whose own spectra still count: the query's library matches
         try:
-            _lb = _P('/kaggle/working/library_best.json')
-            if _lb.is_file():
-                _libbest.update({{str(k): float(v) for k, v in json.loads(_lb.read_text()).items()}})
-            _ev = _P('/kaggle/working/frozen_candidate_evidence.parquet')
+            _thr = float(_DR_PARAMS.get('self_lib', 0.8))
+            _lh = _P('/kaggle/working/library_hits.json')                   # C1: its spectral-library hits
+            if _lh.is_file():
+                for _m, _h in json.loads(_lh.read_text()).items():
+                    _selfok[str(_m)] = [_s for _c, _s in _h if float(_c) >= _thr]
+            _ev = _P('/kaggle/working/frozen_candidate_evidence.parquet')    # fork: leader of a list with a library match
             if _ev.is_file():
                 _e = pd.read_parquet(_ev, columns=['molecule_id', 'library_max'])
                 for _m, _v in _e.groupby('molecule_id', sort=False).library_max.max().items():
-                    if _v == _v:
-                        _libbest[str(_m)] = max(float(_v), _libbest.get(str(_m), 0.0))
+                    if _v == _v and float(_v) >= _thr and str(_m) in _lead:
+                        _selfok.setdefault(str(_m), []).append(_lead[str(_m)])
+            for _m, _l in _keep.items():                                    # protected leads keep theirs too
+                _selfok.setdefault(_m, []).extend(_l)
         except Exception:
             traceback.print_exc()
-        print('DREAMS OVERLAY: protected leads for', len(_keep), 'molecules; library scores for', len(_libbest), flush=True)
+        print('DREAMS OVERLAY: protected leads for', len(_keep), 'molecules; own-spectrum exemptions for', len(_selfok), flush=True)
         _rep = _do.apply(COMP / 'test.parquet', '/kaggle/working/submission_before_dreams.csv', _dd,
                          '/kaggle/working/submission_dreams.csv', '/kaggle/working/dreams_report.json', _DR_PARAMS,
-                         keep=_keep, libbest=_libbest)
+                         keep=_keep, selfok=_selfok)
         _f = pd.read_csv('/kaggle/working/submission_dreams.csv', dtype=str, keep_default_na=False)
         assert _f.molecule_id.tolist() == SAMPLE_IDS and _f.smiles.str.split(';').map(len).between(1, 25).all()
         shutil.copy2('/kaggle/working/submission_dreams.csv', _sub)

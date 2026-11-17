@@ -10,9 +10,10 @@ candidates; a failure keeps the input file. keep (molecule -> SMILES): leads tha
 list, e.g. C1's strong library matches (lib_first_leads.json), whose answers are usually right already. noself: a
 candidate's own reference spectra (same InChIKey first block) do not count for it, so support is analogue support only:
 a class-2 answer has no public spectra, while wrong candidates that are library compounds would otherwise match their
-own spectra (panel C1e lists, lambda 1: 0.618 -> 0.662; experiments/dreams_local.py). It applies only to molecules
-whose best library match (libbest) is below self_lib: a recognised class-1 answer's own spectra are its best evidence
-(panel class-1 view: noself everywhere 0.676 vs 0.880 kept). extra_refs: a
+own spectra (panel C1e lists, lambda 1: 0.618 -> 0.662; experiments/dreams_local.py). Candidates that are the
+query's spectral-library matches (selfok, cosine >= self_lib) keep their own spectra: a recognised class-1 answer's own
+spectra are its best evidence (panel class-1 view, lambda 1: noself everywhere 0.676, library matches exempt 0.858,
+all kept 0.880; class 2: 0.662 / 0.640 / 0.618). extra_refs: a
 glob of further reference embeddings (*_embeddings.npy beside *_meta.parquet with normalized_smiles), e.g. the
 train-library spectra embedded by tools/build_dreams_train_refs.py; neighbours are the k nearest over all references.
 """
@@ -66,11 +67,11 @@ def knn(q: np.ndarray, ref: np.ndarray, k: int, chunk: int) -> tuple[np.ndarray,
 
 
 def apply(test_path, submission_path, dreams_dir, output_path, report_path=None, p: dict | None = None,
-          hide: dict | None = None, keep: dict | None = None, libbest: dict | None = None) -> dict:
+          hide: dict | None = None, keep: dict | None = None, selfok: dict | None = None) -> dict:
     """hide (panel checks only): molecule -> standard InChIKey first blocks whose reference spectra are skipped.
     keep: molecule -> SMILES kept in place while they form the head of the list.
-    libbest: molecule -> best spectral-library match (cosine); with noself, molecules at or above self_lib keep their
-    candidates' own-spectrum support (likely class 1: the answer's spectra are public)."""
+    selfok: molecule -> SMILES whose own reference spectra still count with noself: the query's spectral-library matches
+    (likely class 1: the answer's spectra are public and are its best evidence)."""
     p = {**PARAMS, **(p or {})}
     t0 = time.time()
     report = dict(molecules=0, reordered=0, rank1_changed=0, kept_leads=0, noself_lists=0, errors=0, error_samples=[])
@@ -136,9 +137,10 @@ def apply(test_path, submission_path, dreams_dir, output_path, report_path=None,
                 if time.time() - t0 > p["max_seconds"] or len(cand) < 2 or m not in rows_of:
                     out.append(smi); continue
                 cfp = [fp(s_) for s_ in cand]
-                ns = bool(p["noself"]) and float((libbest or {}).get(m, 0.0)) < p["self_lib"]
+                ns = bool(p["noself"])
                 report["noself_lists"] += int(ns)
                 cik = [cand_ik(s_) for s_ in cand] if ns else None
+                ok_ik = {cand_ik(s_) for s_ in (selfok or {}).get(m, ())} if ns else set()
                 sup = np.zeros(len(cand))
                 for j in rows_of[m]:
                     nb = [(fp(ref_smiles[i]), c, int(i)) for i, c in zip(nn_i[j], nn_s[j])
@@ -151,7 +153,7 @@ def apply(test_path, submission_path, dreams_dir, output_path, report_path=None,
                     for t, f in enumerate(cfp):
                         if f is not None:
                             prod = w * np.array(DataStructs.BulkTanimotoSimilarity(f, fs))
-                            if ns:                      # a candidate's own library spectra do not support it
+                            if ns and cik[t] not in ok_ik:   # a candidate's own library spectra do not support it
                                 prod = np.where(niks == cik[t], 0.0, prod)
                             sup[t] += float(prod.max())
                 sup /= max(len(rows_of[m]), 1)

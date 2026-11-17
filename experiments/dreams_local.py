@@ -61,7 +61,7 @@ def std_ik(s_):
     return _ik[s_]
 
 
-def supports(nbd, lists, view="hidden", p=4.0, k=50, noself=False, agg="max", src="all", self_tau=9.0):
+def supports(nbd, lists, view="hidden", p=4.0, k=50, noself=False, agg="max", src="all", self_tau=9.0, selfok=None):
     """{molecule: np.array of support per candidate of its list}"""
     by_m = {}
     for rec in nbd:
@@ -85,7 +85,7 @@ def supports(nbd, lists, view="hidden", p=4.0, k=50, noself=False, agg="max", sr
                 if f is None:
                     continue
                 prod = w * np.array(DataStructs.BulkTanimotoSimilarity(f, fs))
-                if noself:                     # own spectra count only when nearly identical (cosine >= self_tau)
+                if noself and cik[t] not in (selfok or {}).get(m, ()):   # library-hit candidates keep their own spectra
                     own = np.array([ik == cik[t] for ik in niks])
                     prod = np.where(own & (np.array([x[1] for x in nb]) < self_tau), 0.0, prod)
                 sup[t] += float(prod.max()) if agg == "max" else float(np.sort(prod)[-3:].mean())
@@ -140,6 +140,15 @@ def main() -> None:
     if args.get("grid") == "src":                      # MassSpecGym only vs train-library references only vs both
         grid = [dict(p=4.0, k=50, noself=False, agg="max", src=s_) for s_ in ("msg", "train", "all")]
     print(f"{Path(sys.argv[2]).name} | view {view} | lists {len(lists)} | protected leads {len(heads)} | lambdas {lams}")
+    if "candswitch" in args:                           # per candidate: own spectra kept only for the query's library hits
+        hits = pickle.load(open(args["keep"], "rb"))["hits"]
+        for tau in [float(x) for x in args["candswitch"].split(",")]:
+            ok = {m: {std_ik(s_) for c, s_ in hits.get(m, {}).values() if c >= tau} for m in lists}
+            sups = supports(nbd, lists, view=view, noself=True, selfok=ok)
+            ms, res = evaluate(lists, sups, heads, lams, keys)
+            print(f"  candidate switch {tau:<5g} (exempt candidates {sum(len(v) for v in ok.values())}) | n {len(ms)} | "
+                  + " | ".join(f"{lam:g}: {r:.4f}" for lam, r in zip(lams, res)), flush=True)
+        return
     if "libswitch" in args:                            # per query: own spectra excluded only without a library match
         hits = pickle.load(open(args["keep"], "rb"))["hits"]
         best = {m: max((c for c, _ in hits.get(m, {}).values()), default=0.0) for m in lists}
