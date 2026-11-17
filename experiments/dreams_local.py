@@ -149,7 +149,7 @@ def main() -> None:
         hits = pickle.load(open(args["keep"], "rb"))["hits"]
         for tau in [float(x) for x in args["candswitch"].split(",")]:
             ok = {m: {std_ik(s_) for c, s_ in hits.get(m, {}).values() if c >= tau} for m in lists}
-            sups = supports(nbd, lists, view=view, noself=True, selfok=ok)
+            sups = supports(nbd, lists, view=view, noself=True, selfok=ok, src=args.get("src", "all"))
             ms, res = evaluate(lists, sups, heads, lams, keys)
             print(f"  candidate switch {tau:<5g} (exempt candidates {sum(len(v) for v in ok.values())}) | n {len(ms)} | "
                   + " | ".join(f"{lam:g}: {r:.4f}" for lam, r in zip(lams, res)), flush=True)
