@@ -93,9 +93,23 @@ else:
                         _keep.setdefault(_m, [_lead[_m]])
         except Exception:
             traceback.print_exc()
-        print('DREAMS OVERLAY: protected leads for', len(_keep), 'molecules', flush=True)
+        _libbest = {{}}                  # best library match per molecule (C1 export or the fork's evidence table)
+        try:
+            _lb = _P('/kaggle/working/library_best.json')
+            if _lb.is_file():
+                _libbest.update({{str(k): float(v) for k, v in json.loads(_lb.read_text()).items()}})
+            _ev = _P('/kaggle/working/frozen_candidate_evidence.parquet')
+            if _ev.is_file():
+                _e = pd.read_parquet(_ev, columns=['molecule_id', 'library_max'])
+                for _m, _v in _e.groupby('molecule_id', sort=False).library_max.max().items():
+                    if _v == _v:
+                        _libbest[str(_m)] = max(float(_v), _libbest.get(str(_m), 0.0))
+        except Exception:
+            traceback.print_exc()
+        print('DREAMS OVERLAY: protected leads for', len(_keep), 'molecules; library scores for', len(_libbest), flush=True)
         _rep = _do.apply(COMP / 'test.parquet', '/kaggle/working/submission_before_dreams.csv', _dd,
-                         '/kaggle/working/submission_dreams.csv', '/kaggle/working/dreams_report.json', _DR_PARAMS, keep=_keep)
+                         '/kaggle/working/submission_dreams.csv', '/kaggle/working/dreams_report.json', _DR_PARAMS,
+                         keep=_keep, libbest=_libbest)
         _f = pd.read_csv('/kaggle/working/submission_dreams.csv', dtype=str, keep_default_na=False)
         assert _f.molecule_id.tolist() == SAMPLE_IDS and _f.smiles.str.split(';').map(len).between(1, 25).all()
         shutil.copy2('/kaggle/working/submission_dreams.csv', _sub)

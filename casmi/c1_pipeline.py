@@ -703,6 +703,11 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
         rows_out.append((m, ";".join(final) if final else sample_fill))
     if p["lib_first"] > 0:                  # later overlays (DreaMS) keep these leads in place
         Path(output_path).with_name("lib_first_leads.json").write_text(json.dumps(leads_out))
+    try:                                    # best library-hit cosine per molecule (DreaMS: class-1 likelihood)
+        Path(output_path).with_name("library_best.json").write_text(json.dumps(
+            {m: round(max(c for c, _ in h.values()), 4) for m, h in hits.items() if h}))
+    except Exception as e:
+        report["library_best_error"] = f"{type(e).__name__}: {str(e)[:100]}"
     if p["neural_bundle"] and p["san_gamma"] <= 0:   # rank-level re-rank of the top 25 (C1n) unless fused above
         rows_out = neural_rerank(rows_out, test, p, report)
     out = pd.DataFrame(rows_out, columns=["molecule_id", "smiles"])

@@ -61,7 +61,7 @@ def std_ik(s_):
     return _ik[s_]
 
 
-def supports(nbd, lists, view="hidden", p=4.0, k=50, noself=False, agg="max", src="all"):
+def supports(nbd, lists, view="hidden", p=4.0, k=50, noself=False, agg="max", src="all", self_tau=9.0):
     """{molecule: np.array of support per candidate of its list}"""
     by_m = {}
     for rec in nbd:
@@ -85,8 +85,9 @@ def supports(nbd, lists, view="hidden", p=4.0, k=50, noself=False, agg="max", sr
                 if f is None:
                     continue
                 prod = w * np.array(DataStructs.BulkTanimotoSimilarity(f, fs))
-                if noself:
-                    prod = np.where(np.array([ik == cik[t] for ik in niks]), 0.0, prod)
+                if noself:                     # own spectra count only when nearly identical (cosine >= self_tau)
+                    own = np.array([ik == cik[t] for ik in niks])
+                    prod = np.where(own & (np.array([x[1] for x in nb]) < self_tau), 0.0, prod)
                 sup[t] += float(prod.max()) if agg == "max" else float(np.sort(prod)[-3:].mean())
         out[m] = sup / len(recs)
     return out
@@ -129,17 +130,32 @@ def main() -> None:
                 heads[m] = next((i for i, c in enumerate(cand) if c not in ks), len(cand))
     view = args.get("view", "hidden")
     grid = [dict(p=float(args.get("p", 4)), k=int(args.get("k", 50)), noself=args.get("noself") == "1", agg=args.get("agg", "max"),
-                 src=args.get("src", "all"))]
+                 src=args.get("src", "all"), self_tau=float(args.get("self_tau", 9.0)))]
+    if args.get("grid") == "tau":                      # noself with own spectra kept above a cosine threshold
+        grid = [dict(p=4.0, k=50, noself=True, agg="max", src=args.get("src", "all"), self_tau=tau)
+                for tau in (0.7, 0.8, 0.85, 0.9, 0.95, 9.0)]
     if args.get("grid") == "1":
         grid = [dict(p=p, k=k, noself=ns, agg=ag, src=args.get("src", "all")) for ns in (False, True) for ag in ("max", "top3")
                 for p in (2.0, 4.0, 8.0) for k in (10, 25, 50, 90)]
     if args.get("grid") == "src":                      # MassSpecGym only vs train-library references only vs both
         grid = [dict(p=4.0, k=50, noself=False, agg="max", src=s_) for s_ in ("msg", "train", "all")]
     print(f"{Path(sys.argv[2]).name} | view {view} | lists {len(lists)} | protected leads {len(heads)} | lambdas {lams}")
+    if "libswitch" in args:                            # per query: own spectra excluded only without a library match
+        hits = pickle.load(open(args["keep"], "rb"))["hits"]
+        best = {m: max((c for c, _ in hits.get(m, {}).values()), default=0.0) for m in lists}
+        s0 = supports(nbd, lists, view=view, noself=False)
+        s1 = supports(nbd, lists, view=view, noself=True)
+        for tau in [float(x) for x in args["libswitch"].split(",")]:
+            sups = {m: (s0[m] if best.get(m, 0.0) >= tau else s1[m]) for m in s0}
+            ms, res = evaluate(lists, sups, heads, lams, keys)
+            n_ns = sum(best.get(m, 0.0) < tau for m in s0)
+            print(f"  library switch {tau:<5g} (noself for {n_ns} lists) | n {len(ms)} | "
+                  + " | ".join(f"{lam:g}: {r:.4f}" for lam, r in zip(lams, res)), flush=True)
+        return
     for g in grid:
         sups = supports(nbd, lists, view=view, **g)
         ms, res = evaluate(lists, sups, heads, lams, keys)
-        print(f"  src {g['src']:5s} p {g['p']:g} k {g['k']:3d} noself {int(g['noself'])} agg {g['agg']:4s} | n {len(ms)} | "
+        print(f"  src {g['src']:5s} p {g['p']:g} k {g['k']:3d} noself {int(g['noself'])} tau {g.get('self_tau', 9.0):<4g} agg {g['agg']:4s} | n {len(ms)} | "
               + " | ".join(f"{lam:g}: {r:.4f}" for lam, r in zip(lams, res)), flush=True)
 
 

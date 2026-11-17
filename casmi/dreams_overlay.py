@@ -7,7 +7,12 @@ dataset) are retrieved by cosine. A candidate's support is the maximum over thos
 spectra. Each list is re-ordered by 1/(3 + rank) / sd + lam x z(support) (z within the list), the form measured on the
 panel (experiments: tools/build_dreams_panel.py; documentation-free C1e lists 0.588 -> 0.614 at lam 1). Lists keep their
 candidates; a failure keeps the input file. keep (molecule -> SMILES): leads that stay on top while they still head the
-list, e.g. C1's strong library matches (lib_first_leads.json), whose answers are usually right already. extra_refs: a
+list, e.g. C1's strong library matches (lib_first_leads.json), whose answers are usually right already. noself: a
+candidate's own reference spectra (same InChIKey first block) do not count for it, so support is analogue support only:
+a class-2 answer has no public spectra, while wrong candidates that are library compounds would otherwise match their
+own spectra (panel C1e lists, lambda 1: 0.618 -> 0.662; experiments/dreams_local.py). It applies only to molecules
+whose best library match (libbest) is below self_lib: a recognised class-1 answer's own spectra are its best evidence
+(panel class-1 view: noself everywhere 0.676 vs 0.880 kept). extra_refs: a
 glob of further reference embeddings (*_embeddings.npy beside *_meta.parquet with normalized_smiles), e.g. the
 train-library spectra embedded by tools/build_dreams_train_refs.py; neighbours are the k nearest over all references.
 """
@@ -23,7 +28,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-PARAMS = dict(lam=1.0, k=50, p=4.0, batch=64, chunk=100000, max_seconds=2400, reference="MassSpecGym", extra_refs="")
+PARAMS = dict(lam=1.0, k=50, p=4.0, batch=64, chunk=100000, max_seconds=2400, reference="MassSpecGym", extra_refs="",
+              noself=0, self_lib=0.8)
 
 
 def _model(dreams_dir: Path):
@@ -60,12 +66,14 @@ def knn(q: np.ndarray, ref: np.ndarray, k: int, chunk: int) -> tuple[np.ndarray,
 
 
 def apply(test_path, submission_path, dreams_dir, output_path, report_path=None, p: dict | None = None,
-          hide: dict | None = None, keep: dict | None = None) -> dict:
+          hide: dict | None = None, keep: dict | None = None, libbest: dict | None = None) -> dict:
     """hide (panel checks only): molecule -> standard InChIKey first blocks whose reference spectra are skipped.
-    keep: molecule -> SMILES kept in place while they form the head of the list."""
+    keep: molecule -> SMILES kept in place while they form the head of the list.
+    libbest: molecule -> best spectral-library match (cosine); with noself, molecules at or above self_lib keep their
+    candidates' own-spectrum support (likely class 1: the answer's spectra are public)."""
     p = {**PARAMS, **(p or {})}
     t0 = time.time()
-    report = dict(molecules=0, reordered=0, rank1_changed=0, kept_leads=0, errors=0, error_samples=[])
+    report = dict(molecules=0, reordered=0, rank1_changed=0, kept_leads=0, noself_lists=0, errors=0, error_samples=[])
     sub = pd.read_csv(submission_path, dtype=str, keep_default_na=False)
     try:
         from rdkit import Chem, DataStructs, RDLogger
@@ -110,12 +118,17 @@ def apply(test_path, submission_path, dreams_dir, output_path, report_path=None,
                 m_ = Chem.MolFromSmiles(str(s_)); fpc[s_] = gen.GetFingerprint(m_) if m_ is not None else None
             return fpc[s_]
         rows_of = {str(m): g.index.to_numpy() for m, g in test.groupby("molecule_id", sort=False)}
-        ikc = {}
+        ikc, cikc = {}, {}
 
-        def ref_ik(i):                                  # only for panel checks with hide
+        def ref_ik(i):                                  # panel checks with hide, and noself
             if i not in ikc:
                 m_ = Chem.MolFromSmiles(str(ref_smiles[i])); ikc[i] = Chem.MolToInchiKey(m_)[:14] if m_ is not None else ""
             return ikc[i]
+
+        def cand_ik(s_):
+            if s_ not in cikc:
+                m_ = Chem.MolFromSmiles(str(s_)); cikc[s_] = Chem.MolToInchiKey(m_)[:14] if m_ is not None else "?"
+            return cikc[s_]
         out = []
         for m, smi in zip(sub.molecule_id, sub.smiles):
             cand = smi.split(";")
@@ -123,17 +136,24 @@ def apply(test_path, submission_path, dreams_dir, output_path, report_path=None,
                 if time.time() - t0 > p["max_seconds"] or len(cand) < 2 or m not in rows_of:
                     out.append(smi); continue
                 cfp = [fp(s_) for s_ in cand]
+                ns = bool(p["noself"]) and float((libbest or {}).get(m, 0.0)) < p["self_lib"]
+                report["noself_lists"] += int(ns)
+                cik = [cand_ik(s_) for s_ in cand] if ns else None
                 sup = np.zeros(len(cand))
                 for j in rows_of[m]:
-                    nb = [(fp(ref_smiles[i]), c) for i, c in zip(nn_i[j], nn_s[j])
+                    nb = [(fp(ref_smiles[i]), c, int(i)) for i, c in zip(nn_i[j], nn_s[j])
                           if i >= 0 and not (hide and ref_ik(int(i)) in hide.get(m, ()))]
-                    nb = [(f, c) for f, c in nb if f is not None]
+                    nb = [x for x in nb if x[0] is not None]
                     if not nb:
                         continue
-                    fs, w = [f for f, _ in nb], np.array([max(c, 0.0) ** p["p"] for _, c in nb])
+                    fs, w = [x[0] for x in nb], np.array([max(x[1], 0.0) ** p["p"] for x in nb])
+                    niks = np.array([ref_ik(x[2]) for x in nb], dtype=object) if ns else None
                     for t, f in enumerate(cfp):
                         if f is not None:
-                            sup[t] += float((w * np.array(DataStructs.BulkTanimotoSimilarity(f, fs))).max())
+                            prod = w * np.array(DataStructs.BulkTanimotoSimilarity(f, fs))
+                            if ns:                      # a candidate's own library spectra do not support it
+                                prod = np.where(niks == cik[t], 0.0, prod)
+                            sup[t] += float(prod.max())
                 sup /= max(len(rows_of[m]), 1)
                 base = 1.0 / (3.0 + np.arange(1, len(cand) + 1))
                 z = (sup - sup.mean()) / (sup.std() + 1e-9)
