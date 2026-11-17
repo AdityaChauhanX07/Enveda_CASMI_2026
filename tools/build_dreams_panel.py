@@ -7,7 +7,7 @@ candidate of C1's class-2 list (25, from the spec2mol panel job's payload) gets 
 cosine^p x Tanimoto(candidate, neighbour structure), averaged over the molecule's spectra. Reported per reference set:
 how often the answer has the highest support among its list, and C1's order re-ranked with + lambda x z(support).
 
-usage: python tools/build_dreams_panel.py OUT_DIR (SPEC2MOL_PANEL_SCRIPT | FINAL_LISTS.csv) [Enveda180,MassSpecGym]
+usage: python tools/build_dreams_panel.py OUT_DIR (SPEC2MOL_PANEL_SCRIPT | FINAL_LISTS.csv) [Enveda180,MassSpecGym] [LAMBDAS, 9 = support only]
 """
 from __future__ import annotations
 
@@ -108,7 +108,7 @@ def evaluate(name, nn, ref_smiles, p=4.0):
     best = np.mean([sup.argmax() == ks.index(m) for m, (sup, ks) in rows.items() if m in ks])
     print(f"{name}: molecules {len(rows)}; answer has the highest support in its list: {best:.3f}", flush=True)
     out = []
-    for lam in (0.0, 0.1, 0.25, 0.5, 1.0, 9.0):
+    for lam in __LAMBDAS__:
         rr = 0.0
         for m, (sup, ks) in rows.items():
             base = 1.0 / (3.0 + np.arange(1, len(ks) + 1))
@@ -159,7 +159,8 @@ def main() -> None:
         lists = json.loads(zlib.decompress(base64.b64decode(lists_lit)).decode())["c2"]
     payload = base64.b64encode(zlib.compress(json.dumps(lists).encode(), 9)).decode()
     refs = tuple(sys.argv[3].split(",")) if len(sys.argv) > 3 else ("Enveda180", "MassSpecGym")
-    script = TEMPLATE.replace("__LISTS__", repr(payload)).replace("__REFS__", repr(refs))
+    lams = tuple(float(x) for x in sys.argv[4].split(",")) if len(sys.argv) > 4 else (0.0, 0.1, 0.25, 0.5, 1.0, 9.0)
+    script = TEMPLATE.replace("__LISTS__", repr(payload)).replace("__REFS__", repr(refs)).replace("__LAMBDAS__", repr(lams))
     ast.parse(script)
     out.mkdir(parents=True, exist_ok=True)
     (out / "dreams_panel.py").write_text(script)
