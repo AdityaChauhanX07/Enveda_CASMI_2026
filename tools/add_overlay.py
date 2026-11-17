@@ -54,6 +54,25 @@ def build(src_nb: Path, out_nb: Path, params: dict) -> None:
 
 
 
+TRAIN_REF_KERNELS = [f"adityachauhanx/casmi26-dreams-train-refs-{c}" for c in range(3)]
+
+
+def parse_dreams(spec: str) -> tuple[dict, list[str]]:
+    """--dreams=L[:key=value,...] -> overlay parameters and extra kernel sources. Keys: any casmi.dreams_overlay PARAMS
+    entry (noself, self_lib, k, p, ...) and trainrefs=1 (train-library reference embeddings of the
+    casmi26-dreams-train-refs-* jobs, attached as kernel sources)."""
+    lam, _, rest = str(spec).partition(":")
+    params, kernels = dict(lam=float(lam)), []
+    for kv in filter(None, rest.split(",")):
+        k, v = kv.split("=", 1)
+        if k == "trainrefs":
+            if int(v):
+                params["extra_refs"] = "/kaggle/input/**/train_refs_*_embeddings.npy"; kernels = list(TRAIN_REF_KERNELS)
+        else:
+            params[k] = float(v) if k not in ("reference", "extra_refs") else v
+    return params, kernels
+
+
 DREAMS_CELL = '''# ── DreaMS analogue support: lists re-ranked by the structures of the query's nearest public spectra (MassSpecGym) ──
 import json, shutil, time, traceback, glob as _glob
 from pathlib import Path as _P
