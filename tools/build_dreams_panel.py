@@ -7,7 +7,7 @@ candidate of C1's class-2 list (25, from the spec2mol panel job's payload) gets 
 cosine^p x Tanimoto(candidate, neighbour structure), averaged over the molecule's spectra. Reported per reference set:
 how often the answer has the highest support among its list, and C1's order re-ranked with + lambda x z(support).
 
-usage: python tools/build_dreams_panel.py OUT_DIR SPEC2MOL_PANEL_SCRIPT
+usage: python tools/build_dreams_panel.py OUT_DIR SPEC2MOL_PANEL_SCRIPT [Enveda180,MassSpecGym]
 """
 from __future__ import annotations
 
@@ -118,12 +118,23 @@ def evaluate(name, nn, ref_smiles, p=4.0):
             rr += 1.0 / (order.index(m) + 1) if m in order[:25] else 0.0
         out.append(f"{'support only' if lam > 8 else lam}: {rr / len(rows):.4f}")
     print(f"  C1 order + lambda x z(support) -> MRR | " + " | ".join(out), flush=True)
-for ref_name in ("Enveda180", "MassSpecGym"):
+for ref_name in __REFS__:
     try:
         emb = np.load(D / f"{ref_name}_DreaMS_embeddings.npy", mmap_mode="r")
         meta = pickle.load(open(D / f"{ref_name}_DreaMS_meta.pkl", "rb"))
         smiles = np.asarray(meta["normalized_smiles"] if "normalized_smiles" in meta else meta["smiles"], dtype=object)
-        ik = np.asarray(meta["inchikey14"] if "inchikey14" in meta else [str(v)[:14] for v in meta["inchikey"]], dtype=object)
+        if "inchikey14" in meta:
+            ik = np.asarray(meta["inchikey14"], dtype=object)
+        elif "inchikey" in meta:
+            ik = np.asarray([str(v)[:14] for v in meta["inchikey"]], dtype=object)
+        else:                                          # no key column: standard InChIKey first blocks from the SMILES
+            print(ref_name, "meta keys:", list(meta.keys())[:20], flush=True)
+            cache = {}
+            def ik14(s_):
+                if s_ not in cache:
+                    m_ = Chem.MolFromSmiles(str(s_)); cache[s_] = Chem.MolToInchiKey(m_)[:14] if m_ is not None else ""
+                return cache[s_]
+            ik = np.asarray([ik14(s_) for s_ in smiles], dtype=object)
         print(ref_name, "reference", emb.shape, f"{time.time() - T0:.0f}s", flush=True)
         nn = knn(emb, ik)
         print(ref_name, "neighbours done", f"{time.time() - T0:.0f}s", "| mean top-1 cosine", round(float(np.mean([v[0][1] for v in nn if v])), 3), flush=True)
@@ -140,7 +151,8 @@ def main() -> None:
                      if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "LISTS")
     lists = json.loads(zlib.decompress(base64.b64decode(lists_lit)).decode())["c2"]
     payload = base64.b64encode(zlib.compress(json.dumps(lists).encode(), 9)).decode()
-    script = TEMPLATE.replace("__LISTS__", repr(payload))
+    refs = tuple(sys.argv[3].split(",")) if len(sys.argv) > 3 else ("Enveda180", "MassSpecGym")
+    script = TEMPLATE.replace("__LISTS__", repr(payload)).replace("__REFS__", repr(refs))
     ast.parse(script)
     out.mkdir(parents=True, exist_ok=True)
     (out / "dreams_panel.py").write_text(script)
