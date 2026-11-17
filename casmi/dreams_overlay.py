@@ -6,7 +6,8 @@ dataset) are retrieved by cosine. A candidate's support is the maximum over thos
 (Morgan radius 2, 2,048 bits) between the candidate and the neighbour's structure, averaged over the molecule's
 spectra. Each list is re-ordered by 1/(3 + rank) / sd + lam x z(support) (z within the list), the form measured on the
 panel (experiments: tools/build_dreams_panel.py; documentation-free C1e lists 0.588 -> 0.614 at lam 1). Lists keep their
-candidates; a failure keeps the input file.
+candidates; a failure keeps the input file. keep (molecule -> SMILES): leads that stay on top while they still head the
+list, e.g. C1's strong library matches (lib_first_leads.json), whose answers are usually right already.
 """
 from __future__ import annotations
 
@@ -57,11 +58,12 @@ def knn(q: np.ndarray, ref: np.ndarray, k: int, chunk: int) -> tuple[np.ndarray,
 
 
 def apply(test_path, submission_path, dreams_dir, output_path, report_path=None, p: dict | None = None,
-          hide: dict | None = None) -> dict:
-    """hide (panel checks only): molecule -> standard InChIKey first blocks whose reference spectra are skipped."""
+          hide: dict | None = None, keep: dict | None = None) -> dict:
+    """hide (panel checks only): molecule -> standard InChIKey first blocks whose reference spectra are skipped.
+    keep: molecule -> SMILES kept in place while they form the head of the list."""
     p = {**PARAMS, **(p or {})}
     t0 = time.time()
-    report = dict(molecules=0, reordered=0, rank1_changed=0, errors=0, error_samples=[])
+    report = dict(molecules=0, reordered=0, rank1_changed=0, kept_leads=0, errors=0, error_samples=[])
     sub = pd.read_csv(submission_path, dtype=str, keep_default_na=False)
     try:
         from rdkit import Chem, DataStructs, RDLogger
@@ -113,6 +115,11 @@ def apply(test_path, submission_path, dreams_dir, output_path, report_path=None,
                 z = (sup - sup.mean()) / (sup.std() + 1e-9)
                 order = np.argsort(-(base / base.std() + p["lam"] * z), kind="stable")
                 new = [cand[i] for i in order]
+                ks = set((keep or {}).get(m, ()))
+                n_head = next((i for i, c in enumerate(cand) if c not in ks), len(cand)) if ks else 0
+                if n_head:                              # protected leads stay on top, the rest re-ranked below them
+                    new = cand[:n_head] + [c for c in new if c not in set(cand[:n_head])]
+                    report["kept_leads"] += 1
                 report["molecules"] += 1
                 report["reordered"] += int(new != cand); report["rank1_changed"] += int(new[0] != cand[0])
                 out.append(";".join(new))

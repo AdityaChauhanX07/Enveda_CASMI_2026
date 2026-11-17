@@ -686,7 +686,7 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
             report["frag_seconds"] = round(time.time() - t0, 1)
         except Exception as e:                 # without fragments the lists stay as they are
             report["frag_error"] = f"{type(e).__name__}: {str(e)[:150]}"
-    rows_out = []
+    rows_out, leads_out = [], {}
     for m in ids:
         ranked = [(k, s_) for k, (v, s_) in sorted(scs.get(m, {}).items(), key=lambda x: -x[1][0])]
         if p["lib_first"] > 0 and m in hits:      # strong library matches first, best cosine first
@@ -697,9 +697,12 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
                     seen.add(k); lead.append((k, s_))
             if lead:
                 report["lib_first_lists"] = report.get("lib_first_lists", 0) + 1
+                leads_out[m] = [s_ for _, s_ in lead][: p["top_k"]]
             ranked = lead + [(k, s_) for k, s_ in ranked if k not in seen]
         final = [s_ for _, s_ in ranked][: p["top_k"]]
         rows_out.append((m, ";".join(final) if final else sample_fill))
+    if p["lib_first"] > 0:                  # later overlays (DreaMS) keep these leads in place
+        Path(output_path).with_name("lib_first_leads.json").write_text(json.dumps(leads_out))
     if p["neural_bundle"] and p["san_gamma"] <= 0:   # rank-level re-rank of the top 25 (C1n) unless fused above
         rows_out = neural_rerank(rows_out, test, p, report)
     out = pd.DataFrame(rows_out, columns=["molecule_id", "smiles"])

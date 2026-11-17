@@ -72,8 +72,30 @@ else:
         _spec = _ilu.spec_from_file_location('dreams_overlay', _p); _do = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_do)
         _dd = _P(sorted(_glob.glob('/kaggle/input/**/MassSpecGym_DreaMS_embeddings.npy', recursive=True), key=len)[0]).parent
         _sub = _P('/kaggle/working/submission.csv'); shutil.copy2(_sub, '/kaggle/working/submission_before_dreams.csv')
+        _keep = {{}}                     # leads that stay on top: strong library matches (usually right already)
+        try:
+            _cur = pd.read_csv(_sub, dtype=str, keep_default_na=False)
+            _lead = {{m: s.split(';')[0] for m, s in zip(_cur.molecule_id, _cur.smiles)}}
+            _lf = _P('/kaggle/working/lib_first_leads.json')                 # C1: library hits >= lib_first lead
+            if _lf.is_file():
+                _keep.update({{str(k): list(v) for k, v in json.loads(_lf.read_text()).items()}})
+            _ev = _P('/kaggle/working/frozen_candidate_evidence.parquet')    # fork: lists with a strong library match
+            if _ev.is_file():
+                _e = pd.read_parquet(_ev, columns=['molecule_id', 'library_max'])
+                for _m, _v in _e.groupby('molecule_id', sort=False).library_max.max().items():
+                    if _v == _v and float(_v) >= 0.9 and str(_m) in _lead:
+                        _keep.setdefault(str(_m), [_lead[str(_m)]])
+            _pre = _P('/kaggle/working/submission_pre_apex_extlib.csv')     # fork: leaders promoted by external-library hits
+            if _pre.is_file():
+                _p0 = pd.read_csv(_pre, dtype=str, keep_default_na=False)
+                for _m, _s in zip(_p0.molecule_id, _p0.smiles):
+                    if _m in _lead and _s.split(';')[0] != _lead[_m]:
+                        _keep.setdefault(_m, [_lead[_m]])
+        except Exception:
+            traceback.print_exc()
+        print('DREAMS OVERLAY: protected leads for', len(_keep), 'molecules', flush=True)
         _rep = _do.apply(COMP / 'test.parquet', '/kaggle/working/submission_before_dreams.csv', _dd,
-                         '/kaggle/working/submission_dreams.csv', '/kaggle/working/dreams_report.json', _DR_PARAMS)
+                         '/kaggle/working/submission_dreams.csv', '/kaggle/working/dreams_report.json', _DR_PARAMS, keep=_keep)
         _f = pd.read_csv('/kaggle/working/submission_dreams.csv', dtype=str, keep_default_na=False)
         assert _f.molecule_id.tolist() == SAMPLE_IDS and _f.smiles.str.split(';').map(len).between(1, 25).all()
         shutil.copy2('/kaggle/working/submission_dreams.csv', _sub)
