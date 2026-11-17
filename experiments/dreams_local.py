@@ -61,11 +61,17 @@ def std_ik(s_):
     return _ik[s_]
 
 
+MODES = None                                         # --posonly: panel spectra ion modes (artifacts/dreams/panel_modes.json)
+
+
 def supports(nbd, lists, view="hidden", p=4.0, k=50, noself=False, agg="max", src="all", self_tau=9.0, selfok=None):
     """{molecule: np.array of support per candidate of its list}"""
     by_m = {}
-    for rec in nbd:
-        by_m.setdefault(rec["m"], []).append(rec)
+    for i, rec in enumerate(nbd):
+        by_m.setdefault(rec["m"], []).append((i, rec))
+    if MODES is not None:                           # positive-mode spectra only, when the molecule has any
+        by_m = {m: ([x for x in v if MODES[x[0]] == "pos"] or v) for m, v in by_m.items()}
+    by_m = {m: [rec for _, rec in v] for m, v in by_m.items()}
     out = {}
     for m, cand in lists.items():
         recs = by_m.get(m)
@@ -120,8 +126,10 @@ def main() -> None:
     nbd = json.loads(gzip.decompress(Path(sys.argv[1]).read_bytes()))
     sub = pd.read_csv(sys.argv[2], dtype=str, keep_default_na=False)
     args = dict(a[2:].split("=", 1) for a in sys.argv[3:] if a.startswith("--") and "=" in a)
-    global EPS
+    global EPS, MODES
     EPS = float(args.get("eps", 1e-9))
+    if args.get("posonly") == "1":
+        MODES = json.loads((Path(__file__).resolve().parents[1] / "artifacts" / "dreams" / "panel_modes.json").read_text())
     lists = {m: smi.split(";") for m, smi in zip(sub.molecule_id, sub.smiles)}
     keys = _key_cache([s_ for cand in lists.values() for s_ in cand], metric_key)
     lams = [float(x) for x in args.get("lams", "0,0.5,0.75,1,1.25,1.5").split(",")]

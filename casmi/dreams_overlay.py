@@ -15,7 +15,9 @@ query's spectral-library matches (selfok, cosine >= self_lib) keep their own spe
 spectra are its best evidence (panel class-1 view, lambda 1: noself everywhere 0.676, library matches exempt 0.858,
 all kept 0.880; class 2: 0.662 / 0.640 / 0.618). z_eps damps z(support) in lists where support barely varies (z =
 (s - mean) / (sd + z_eps)): with z_eps 0.01 the best weight is a plateau at 1.25-2 (panel, lambda 1.5: C1k class 2
-0.603 -> 0.653, documentation-heavy 0.824 -> 0.849, class-1 views 0.854 -> 0.862 / 0.842). extra_refs: a
+0.603 -> 0.653, documentation-heavy 0.824 -> 0.849, class-1 views 0.854 -> 0.862 / 0.842). pos_only: a molecule's
+support comes from its positive-mode spectra when it has any (MassSpecGym holds positive mode only; panel +0.002 to
++0.010 in every regime). extra_refs: a
 glob of further reference embeddings (*_embeddings.npy beside *_meta.parquet with normalized_smiles), e.g. the
 train-library spectra embedded by tools/build_dreams_train_refs.py; neighbours are the k nearest over all references.
 """
@@ -32,7 +34,7 @@ import numpy as np
 import pandas as pd
 
 PARAMS = dict(lam=1.0, k=50, p=4.0, batch=64, chunk=100000, max_seconds=2400, reference="MassSpecGym", extra_refs="",
-              noself=0, self_lib=0.8, z_eps=1e-9)
+              noself=0, self_lib=0.8, z_eps=1e-9, pos_only=0)
 
 
 def _model(dreams_dir: Path):
@@ -121,6 +123,9 @@ def apply(test_path, submission_path, dreams_dir, output_path, report_path=None,
                 m_ = Chem.MolFromSmiles(str(s_)); fpc[s_] = gen.GetFingerprint(m_) if m_ is not None else None
             return fpc[s_]
         rows_of = {str(m): g.index.to_numpy() for m, g in test.groupby("molecule_id", sort=False)}
+        if p["pos_only"] and "ionization_mode" in test.columns:   # references are positive mode: use those spectra
+            pos = test.ionization_mode.astype(str).str.lower().str.startswith("pos").to_numpy()
+            rows_of = {m: (r[pos[r]] if pos[r].any() else r) for m, r in rows_of.items()}
         ikc, cikc = {}, {}
 
         def ref_ik(i):                                  # panel checks with hide, and noself
