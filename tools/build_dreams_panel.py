@@ -7,7 +7,7 @@ candidate of C1's class-2 list (25, from the spec2mol panel job's payload) gets 
 cosine^p x Tanimoto(candidate, neighbour structure), averaged over the molecule's spectra. Reported per reference set:
 how often the answer has the highest support among its list, and C1's order re-ranked with + lambda x z(support).
 
-usage: python tools/build_dreams_panel.py OUT_DIR SPEC2MOL_PANEL_SCRIPT [Enveda180,MassSpecGym]
+usage: python tools/build_dreams_panel.py OUT_DIR (SPEC2MOL_PANEL_SCRIPT | FINAL_LISTS.csv) [Enveda180,MassSpecGym]
 """
 from __future__ import annotations
 
@@ -145,11 +145,18 @@ for ref_name in __REFS__:
 
 
 def main() -> None:
-    out, panel_script = Path(sys.argv[1]), Path(sys.argv[2])
-    src = panel_script.read_text()
-    lists_lit = next(n.value.args[0].args[0].value for n in ast.walk(ast.parse(src))
-                     if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "LISTS")
-    lists = json.loads(zlib.decompress(base64.b64decode(lists_lit)).decode())["c2"]
+    out, source = Path(sys.argv[1]), Path(sys.argv[2])
+    if source.suffix == ".csv":                       # final lists of a real-pipeline run (molecule_id = the answer's key)
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        import pandas as pd
+        from casmi.metric import ik14
+        sub = pd.read_csv(source, dtype=str, keep_default_na=False)
+        lists = {m: [[ik14(s_) or "", s_] for s_ in smi.split(";")] for m, smi in zip(sub.molecule_id, sub.smiles)}
+    else:                                             # the spec2mol panel job's payload (C1's class-2 lists)
+        src = source.read_text()
+        lists_lit = next(n.value.args[0].args[0].value for n in ast.walk(ast.parse(src))
+                         if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "LISTS")
+        lists = json.loads(zlib.decompress(base64.b64decode(lists_lit)).decode())["c2"]
     payload = base64.b64encode(zlib.compress(json.dumps(lists).encode(), 9)).decode()
     refs = tuple(sys.argv[3].split(",")) if len(sys.argv) > 3 else ("Enveda180", "MassSpecGym")
     script = TEMPLATE.replace("__LISTS__", repr(payload)).replace("__REFS__", repr(refs))
