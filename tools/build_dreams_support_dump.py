@@ -12,7 +12,9 @@ Output (the job's output files): dreams_support.json.gz = {molecule: {smiles: [h
 dreams_neighbours.json.gz = per panel spectrum, its molecule, answer key and K + 40 nearest references
 [index, cosine, SMILES, InChIKey first block].
 
-usage: python tools/build_dreams_support_dump.py OUT_DIR LISTS1.csv[,LISTS2.csv,...] [K] [P]
+usage: python tools/build_dreams_support_dump.py OUT_DIR LISTS1.csv[,LISTS2.csv,...] [K] [P] [extra]
+(extra: also the train-library references of the casmi26-dreams-train-refs-* jobs; each neighbour's last field is its
+source, 0 = MassSpecGym, 1 = train library; the support file then uses both)
 """
 from __future__ import annotations
 
@@ -80,6 +82,22 @@ for a in range(0, ref.shape[0], 200000):
     o = np.argsort(-allc, axis=1)[:, :KK]
     best_s, best_i = np.take_along_axis(allc, o, 1), np.take_along_axis(alli, o, 1)
 print("neighbours done", f"{time.time() - T0:.0f}s", flush=True)
+SRC = np.zeros(len(ref_smiles), np.int8)              # 0 = MassSpecGym, 1 = train-library references
+extra = sorted(glob.glob("/kaggle/input/**/train_refs_*_embeddings.npy", recursive=True)) if __EXTRA__ else []
+if extra:
+    off = len(ref_smiles); smis = [ref_smiles]
+    for f in extra:
+        E = np.load(f, mmap_mode="r"); mt = pd.read_parquet(f.replace("_embeddings.npy", "_meta.parquet"))
+        s = (qt @ torch.from_numpy(np.asarray(E, np.float32)).T).numpy()
+        kk = min(KK, s.shape[1]); top = np.argpartition(-s, kk - 1, axis=1)[:, :kk]
+        allc = np.concatenate([best_s, np.take_along_axis(s, top, 1)], 1); alli = np.concatenate([best_i, top + off], 1)
+        o = np.argsort(-allc, axis=1)[:, :KK]
+        best_s, best_i = np.take_along_axis(allc, o, 1), np.take_along_axis(alli, o, 1)
+        smis.append(mt.normalized_smiles.to_numpy(dtype=object)); off += len(mt)
+        print("extra reference", Path(f).name, E.shape, flush=True)
+    ref_smiles = np.concatenate(smis)
+    SRC = np.concatenate([SRC, np.ones(len(ref_smiles) - len(SRC), np.int8)])
+    print("references", len(ref_smiles), f"{time.time() - T0:.0f}s", flush=True)
 ikc = {}
 def ref_ik(i):
     if i not in ikc:
@@ -117,7 +135,7 @@ for m, cands in CANDS.items():
 Path("/kaggle/working/dreams_support.json.gz").write_bytes(gzip.compress(json.dumps(out).encode()))
 # raw neighbours too (offline checks of p, k and the aggregation): per panel spectrum, the KK nearest references
 nbd = [dict(m=q.m.iloc[j], ik14=q.ik14.iloc[j],
-            nb=[[int(i), round(float(c), 5), str(ref_smiles[i]), ref_ik(int(i))] for i, c in zip(best_i[j], best_s[j]) if i >= 0])
+            nb=[[int(i), round(float(c), 5), str(ref_smiles[i]), ref_ik(int(i)), int(SRC[i])] for i, c in zip(best_i[j], best_s[j]) if i >= 0])
        for j in range(len(Q))]
 Path("/kaggle/working/dreams_neighbours.json.gz").write_bytes(gzip.compress(json.dumps(nbd).encode()))
 print("molecules", len(out), "pairs", n_pairs, f"{time.time() - T0:.0f}s", flush=True)
@@ -137,7 +155,9 @@ def main() -> None:
             seen = cands.setdefault(m, [])
             seen.extend(s_ for s_ in smi.split(";") if s_ and s_ not in seen)
     payload = base64.b64encode(zlib.compress(json.dumps(cands).encode(), 9)).decode()
-    script = TEMPLATE.replace("__CANDS__", repr(payload)).replace("__K__", repr(k)).replace("__P__", repr(p))
+    extra = len(sys.argv) > 5 and sys.argv[5] == "extra"
+    script = (TEMPLATE.replace("__CANDS__", repr(payload)).replace("__K__", repr(k)).replace("__P__", repr(p))
+              .replace("__EXTRA__", repr(extra)))
     ast.parse(script)
     out.mkdir(parents=True, exist_ok=True)
     (out / "dreams_support_dump.py").write_text(script)
@@ -145,7 +165,10 @@ def main() -> None:
             "code_file": "dreams_support_dump.py", "language": "python", "kernel_type": "script", "is_private": True,
             "enable_gpu": False, "enable_tpu": False, "enable_internet": False,
             "dataset_sources": ["hengck23/hengck23-dreams-enveda-casmi26", "metric/rdkit-2026-3-3-wheel"],
-            "competition_sources": ["enveda-CASMI26-molecule-id-mass-spectra"], "kernel_sources": [], "model_sources": []}
+            "competition_sources": ["enveda-CASMI26-molecule-id-mass-spectra"], "model_sources": [],
+            "kernel_sources": [f"adityachauhanx/casmi26-dreams-train-refs-{c}" for c in range(3)] if extra else []}
+    if extra:
+        meta.update(id="adityachauhanx/casmi26-dreams-support-dump-extra", title="casmi26 dreams support dump extra")
     (out / "kernel-metadata.json").write_text(json.dumps(meta, indent=1))
     print("written", out / "dreams_support_dump.py", len(script), "bytes;", len(cands), "molecules,",
           sum(len(v) for v in cands.values()), "pairs")

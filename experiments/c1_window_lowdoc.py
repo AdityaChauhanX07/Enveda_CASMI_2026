@@ -12,6 +12,7 @@ candidates (as experiments/c1_panel.py); no spec2mol (its saved scores cover onl
 
 usage: c1_window_lowdoc.py NATURAL_PRODUCTS_PARQUET COCONUT_CSV [--caps=none,4,0] [--beta=3] [--w_doc=0.25] [--window_only=1]
        [--coconut_extra=1] [--lib_beta=4] [--frag=LAMBDA:TOL] [--npl=ETA] [--view=c1] [--lib_first=T] [--dump=PATH] [--short_n=100] [--np_keep=50] [--n_partial=2000] [--logits=both,merged,single,w0.75,prob]
+       [--pub_cache=DUMP.pkl]
 (--view=c1: the class-1 view - only the queries' own library left out of the library search, nothing hidden)
 """
 from __future__ import annotations
@@ -83,6 +84,10 @@ if __name__ == "__main__":
     print(f"{'class-1 view' if args.get('view') == 'c1' else 'class 2'}, C1 (w_doc {w_doc}) + {beta} x natural-product membership "
           f"(library-hit weight {base['lib_beta']}); answer documentation capped inside the window stage")
     variants = (("C1 + bonus", dict(np_window=0)), ("C1 + bonus + NP-aware window", dict(np_window=1)))
+    pub_cache = None                                   # PubChem windows of an earlier dump with the same window settings
+    if "pub_cache" in args:                            # (they do not depend on the library search, so either view)
+        import pickle
+        pub_cache = pickle.load(open(args["pub_cache"], "rb"))["pub"]
     runs = [(mode, cap) for mode in logit_modes for cap in caps]
     for mode, cap in runs:
         cached.clear(); cached.update({str(k): v for k, v in zip(zl["keys"], ensemble(mode))})
@@ -95,7 +100,7 @@ if __name__ == "__main__":
             rep = c1_pipeline.run(test_path, DATA / "train.parquet", EXT / "pubchem_prior" / "casmi26-pubchem-tier", EXT / "foldsafe",
                                   EXT / "v4g" / "casmi26-v4b-models" / "code" / "casmi", out, None, pp,
                                   hide_lib=None if view_c1 else {m: {std[m]} for m in std}, logits_fn=cached.get,
-                                  doc_root=EXT / "pubchem_prior", dump_path=args.get("dump"))
+                                  doc_root=EXT / "pubchem_prior", dump_path=args.get("dump"), pub_cache=pub_cache)
             if args.get("dump"):                       # the final lists too, for failure analysis
                 import shutil
                 shutil.copy(out, str(args["dump"]) + ".sub.csv")
