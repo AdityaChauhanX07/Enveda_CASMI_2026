@@ -19,7 +19,11 @@ all kept 0.880; class 2: 0.662 / 0.640 / 0.618). z_eps damps z(support) in lists
 support comes from its positive-mode spectra when it has any (MassSpecGym holds positive mode only; panel +0.002 to
 +0.010 in every regime). rev_rho > 0 adds reverse support: for each candidate, its analogues among all reference
 structures (Tanimoto >= rev_t, own structure excluded as with noself) and their best DreaMS cosine to the query,
-max of Tanimoto x cosine^rev_p, added as rev_rho x zd(.) (experiments/dreams_reverse.py). extra_refs: a
+max of Tanimoto x cosine^rev_p, added as rev_rho x zd(.) (experiments/dreams_reverse.py). net_mu > 0 adds an
+in-test network: test molecules whose mean DreaMS embeddings have cosine >= net_tau are linked, and a candidate gains
+net_mu x zd(sum over linked molecules of cosine^4 x the rank-weighted Tanimoto to their first net_top candidates); it
+uses no public reference, only the test set itself (LB, Nov 18: the reference-based terms hurt on the hidden answers,
+which have few public analogues). extra_refs: a
 glob of further reference embeddings (*_embeddings.npy beside *_meta.parquet with normalized_smiles), e.g. the
 train-library spectra embedded by tools/build_dreams_train_refs.py; neighbours are the k nearest over all references.
 """
@@ -36,7 +40,8 @@ import numpy as np
 import pandas as pd
 
 PARAMS = dict(lam=1.0, k=50, p=4.0, batch=64, chunk=100000, max_seconds=2400, reference="MassSpecGym", extra_refs="",
-              noself=0, self_lib=0.8, z_eps=1e-9, pos_only=0, rev_rho=0.0, rev_t=0.6, rev_p=4.0)
+              noself=0, self_lib=0.8, z_eps=1e-9, pos_only=0, rev_rho=0.0, rev_t=0.6, rev_p=4.0,
+              net_mu=0.0, net_tau=0.6, net_top=5)
 
 
 def _model(dreams_dir: Path):
@@ -159,6 +164,17 @@ def apply(test_path, submission_path, dreams_dir, output_path, report_path=None,
                 off += r.shape[0]
             rev = dict(best=np.clip(best, 0.0, 1.0), qpos=qpos, u_idx=u_idx, u_fps=u_fps, u_ik=u_ik)
             report["reverse_structures"] = int(len(uniq)); report["reverse_seconds"] = round(time.time() - t0, 1)
+        links_of, lists_in = {}, {str(m_): s_.split(";") for m_, s_ in zip(sub.molecule_id, sub.smiles)}
+        if p["net_mu"] > 0:                             # in-test network: molecules linked by DreaMS cosine >= net_tau
+            ms_e = [m_ for m_ in rows_of if len(rows_of[m_])]
+            E = np.stack([q[rows_of[m_]].mean(0) for m_ in ms_e]).astype(np.float32)
+            E /= np.maximum(np.linalg.norm(E, axis=1, keepdims=True), 1e-9)
+            Sm = E @ E.T; np.fill_diagonal(Sm, -1.0)
+            for a_, m_ in enumerate(ms_e):
+                idx = np.flatnonzero(Sm[a_] >= p["net_tau"])
+                if len(idx):
+                    links_of[m_] = [(ms_e[b_], float(Sm[a_, b_])) for b_ in idx]
+            report["net_linked"] = len(links_of)
         out = []
         for m, smi in zip(sub.molecule_id, sub.smiles):
             cand = smi.split(";")
@@ -207,6 +223,18 @@ def apply(test_path, submission_path, dreams_dir, output_path, report_path=None,
                     if np.isfinite(rv).any():
                         rv = np.where(np.isfinite(rv), rv, np.nanmean(rv))
                         score = score + p["rev_rho"] * (rv - rv.mean()) / (rv.std() + p["z_eps"])
+                if m in links_of:                       # + mu x zd(similarity to linked molecules' top candidates)
+                    N = np.zeros(len(cand))
+                    for m2, cc in links_of[m]:
+                        tops = [f for f in (fp(s2) for s2 in lists_in.get(m2, [])[:int(p["net_top"])]) if f is not None]
+                        if not tops:
+                            continue
+                        wv = 1.0 / np.arange(1, len(tops) + 1); wv /= wv.sum()
+                        for t, f in enumerate(cfp):
+                            if f is not None:
+                                N[t] += cc ** 4 * float(np.dot(wv, DataStructs.BulkTanimotoSimilarity(f, tops)))
+                    if N.any():
+                        score = score + p["net_mu"] * (N - N.mean()) / (N.std() + p["z_eps"])
                 order = np.argsort(-score, kind="stable")
                 new = [cand[i] for i in order]
                 ks = set((keep or {}).get(m, ()))
