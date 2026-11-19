@@ -264,8 +264,20 @@ for st in STAGES:
 if REFIT:
     done = [s for s in report["stages"] if s["best_epoch"]]
     neg = REFIT["neg"]
-    if neg == "auto":
-        neg = max(done, key=lambda s: (s["best_pc_mrr"], -("pc" in s["negatives"])))["negatives"]
+    def at_best(s):
+        return next(r for r in s["history"] if r["epoch"] == s["best_epoch"])
+    def panel_best(s):
+        return max(at_best(s)[f"panel_g{g:g}"] for g in GAMMAS)
+    if neg == "auto":                            # PubChem negatives only if they win the novelty holdout without
+        kit_s = next((s for s in done if s["negatives"] == "kit"), None)    # costing the panel's real lists > 0.01
+        neg = "kit" if kit_s else max(done, key=lambda s: s["best_pc_mrr"])["negatives"]
+        for s in sorted(done, key=lambda s: -s["best_pc_mrr"]):
+            if kit_s is None or s is kit_s:
+                break
+            if s["best_pc_mrr"] > kit_s["best_pc_mrr"] and panel_best(s) >= panel_best(kit_s) - 0.01:
+                neg = s["negatives"]; break
+        report["auto_choice"] = dict(chosen=neg, by_stage={s["name"]: dict(pc_mrr=s["best_pc_mrr"], panel_best=panel_best(s),
+                                                                            kit_mrr25=at_best(s)["kit_mrr25"]) for s in done})
     ref = next(s for s in done if s["negatives"] == neg) if done else None
     ep = REFIT["epochs"]
     if ref is not None and ref["best_epoch"] < 0.75 * ref["epochs"]:
