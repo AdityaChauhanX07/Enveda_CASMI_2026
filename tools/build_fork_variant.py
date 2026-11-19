@@ -15,6 +15,10 @@ usage: python tools/build_fork_variant.py BASE_KERNEL_DIR OUT_DIR SLUG [--pop_w=
 --pc_np=B: the frozen PubChem channel's prior keeps only natural-product membership (bonus B x POP_LAM)
 --ours=OWNER/KERNEL: the fork's second neural scorer (its `_swap_to_ours` loads the attached source with
            final_model.pt + config_used.json) comes from this kernel instead of popwenman's casmi26-scorer-train-v80
+--pub2=OWNER/KERNEL: a second copy of our scorer replaces the public kit model in the fork's 0.5 z(public) + 0.5 z(ours)
+           blend of the final lists (an all-ours ensemble, e.g. --ours=adityachauhanx/casmi26-s2-train
+           --pub2=adityachauhanx/casmi26-s2-train-seed2); the public model still serves wherever it served before; if the
+           copy is missing, the blend falls back to the public model
 --n1c=LAM: the public in-test network rerank (analyticaobscura's N-1c; LAM 0.35 = the public 0.492 recipe) before the
            external-library overlay (bases with that overlay, e.g. Fork B)
 """
@@ -148,6 +152,28 @@ S2M_FUSE = """        print('ENSEMBLE neural = 0.5*z(public) + 0.5*z(ours)', flu
 """
 
 
+PUB2_DEF = """# ---- a second copy of our scorer in place of the public model in the final-list blend ----
+PUB2_SLUG = '__SLUG__'
+def _stage_pub2(base_bundle):
+    import shutil as _s
+    from pathlib import Path as _P
+    _hits = [p for p in _P('/kaggle/input').rglob('final_model.pt')
+             if '/' + PUB2_SLUG + '/' in str(p) and (p.parent / 'config_used.json').is_file()]
+    if not _hits:
+        print('PUB2: copy not found under /kaggle/input, the blend keeps the public model')
+        return None
+    _dst = _P('/kaggle/working/pub2_bundle'); _dst.mkdir(parents=True, exist_ok=True)
+    for _f in ('model.py', 'features.py', 'config.json'):
+        _s.copy2(_P(base_bundle) / _f, _dst / _f)
+    _s.copy2(_hits[0].parent / 'config_used.json', _dst / 'config_used.json')
+    _s.copy2(_hits[0], _dst / 'final_model.pt')
+    print('PUB2 BUNDLE READY:', sorted(p.name for p in _dst.iterdir()), 'from', _hits[0].parent)
+    return str(_dst)
+
+
+"""
+
+
 def main() -> None:
     base, out, slug = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
     args = dict(a[2:].split("=", 1) for a in sys.argv[4:] if a.startswith("--") and "=" in a)
@@ -200,6 +226,21 @@ def main() -> None:
         tmpl = (Path(__file__).resolve().parent / "templates" / "n1c_cell.py.tmpl").read_text()
         cells.insert(idx[0], {"cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
                               "source": tmpl.replace("__LAM__", repr(float(args["n1c"]))).splitlines(keepends=True)})
+    if "pub2" in args:                                   # a second copy of ours in place of the public model in the blend
+        slug2 = args["pub2"].split("/")[-1]
+        idx = [i for i, c in enumerate(cells) if c["cell_type"] == "code" and "OURS_BUNDLE = _swap_to_ours(PUB_BUNDLE)" in "".join(c["source"])]
+        assert len(idx) == 1, f"swap cell found {len(idx)} times"
+        s = "".join(cells[idx[0]]["source"])
+        s = replace_once(s, "    _src = _hits[0].parent\n",
+                         "    _own = [h for h in _hits if '/' + PUB2_SLUG + '/' not in str(h)] or _hits   # the copy for the blend is not ours\n"
+                         "    _src = _own[0].parent\n", "swap choice")
+        s = replace_once(s, "PUB_BUNDLE = BUNDLE\nOURS_BUNDLE = _swap_to_ours(PUB_BUNDLE)\n",
+                         PUB2_DEF.replace("__SLUG__", slug2) + "PUB_BUNDLE = BUNDLE\nOURS_BUNDLE = _swap_to_ours(PUB_BUNDLE)\n"
+                         "PUB2_BUNDLE = _stage_pub2(PUB_BUNDLE)\n", "pub2 staging")
+        s = replace_once(s, "    BUNDLE = PUB_BUNDLE\n    NEURAL_OK = score_final_lists()\n",
+                         "    BUNDLE = PUB2_BUNDLE or PUB_BUNDLE          # a second copy of ours, else the public model\n"
+                         "    NEURAL_OK = score_final_lists()\n", "pub2 blend")
+        cells[idx[0]]["source"] = s.splitlines(keepends=True)
     if "dreams" in args:                                 # analogue-support overlay as the last cell
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import add_overlay
@@ -216,13 +257,15 @@ def main() -> None:
     if "dreams" in args:                                 # train-library reference embeddings (kernel outputs)
         meta["kernel_sources"] = list(meta.get("kernel_sources", [])) + [k for k in add_overlay.parse_dreams(args["dreams"])[1]
                                                                           if k not in meta.get("kernel_sources", [])]
+    if "pub2" in args and args["pub2"] not in meta.get("kernel_sources", []):
+        meta["kernel_sources"] = list(meta.get("kernel_sources", [])) + [args["pub2"]]
     if "ours" in args:                                   # second neural scorer from another training kernel
         ks = list(meta.get("kernel_sources", []))
         assert "popwenman/casmi26-scorer-train-v80" in ks, f"the base attaches no v80 scorer: {ks}"
         meta["kernel_sources"] = [args["ours"] if k == "popwenman/casmi26-scorer-train-v80" else k for k in ks]
     (out / "kernel-metadata.json").write_text(json.dumps(meta, indent=1))
     print("written", out / nb_path.name, "| fusion", (pop_w, spec_w, np_w),
-          {k: args[k] for k in ("pop_lam", "poolpop_mu", "pop_tau", "pc_np", "s2m", "w_top", "w_mid", "n1c", "dreams", "ours", "commit") if k in args})
+          {k: args[k] for k in ("pop_lam", "poolpop_mu", "pop_tau", "pc_np", "s2m", "w_top", "w_mid", "n1c", "dreams", "ours", "pub2", "commit") if k in args})
 
 
 if __name__ == "__main__":
