@@ -392,9 +392,10 @@ def neural_rerank(rows_out: list, test: pd.DataFrame, p: dict, report: dict) -> 
     import sys as _sys
     t0 = time.time()
     try:
-        _sys.path.insert(0, str(p["neural_bundle"]))
+        bundle = str(p["neural_bundle"]).split(",")[0]     # rank-level re-rank: the first bundle only
+        _sys.path.insert(0, bundle)
         from inference import Scorer
-        scorer = Scorer(p["neural_bundle"], device=p["device"])
+        scorer = Scorer(bundle, device=p["device"])
     except Exception as e:                    # without the scorer the lists stay as they are
         report["neural_error"] = f"{type(e).__name__}: {str(e)[:150]}"
         return rows_out
@@ -643,9 +644,11 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
     if p["neural_bundle"] and p["san_gamma"] > 0:  # sanpier's model over each whole shortlist (score level)
         try:
             import sys as _sys
-            _sys.path.insert(0, str(p["neural_bundle"]))
-            from inference import Scorer
-            scorer = Scorer(p["neural_bundle"], device=p["device"])
+            bundles = [b for b in str(p["neural_bundle"]).split(",") if b]   # several: copies averaged (an ensemble)
+            _sys.path.insert(0, bundles[0])
+            from inference import Scorer           # the kit's inference.py, the same file in every bundle
+            scorers = [Scorer(b, device=p["device"]) for b in bundles]
+            report["san_models"] = len(scorers)
             by_mol = {str(m): g for m, g in test.groupby("molecule_id", sort=False)}
             vs = {}
             for m, sc in scs.items():
@@ -659,7 +662,8 @@ def run(test_path, train_path, index_root, foldsafe_dir, v4_code_dir, output_pat
                         spectra.append(dict(mzs=np.asarray(r.ms2_mzs, float), intensities=np.asarray(r.ms2_normalized_intensities, float),
                                             precursor_mz=float(r.precursor_mz), adduct=str(r.adduct), ionization_mode=str(r.ionization_mode),
                                             collision_energy=float(np.nanmean(ce)) if len(ce) and np.isfinite(ce).any() else None))
-                    vs[m] = np.asarray(scorer.score_candidates(spectra, [s_ for _, s_ in sc.values()]), dtype=np.float64)
+                    cands = [s_ for _, s_ in sc.values()]
+                    vs[m] = np.mean([np.asarray(s.score_candidates(spectra, cands), dtype=np.float64) for s in scorers], axis=0)
                 except Exception as e:         # this molecule keeps its order
                     report["errors"] += 1
                     if len(report["error_samples"]) < 3:
