@@ -11,7 +11,9 @@ Output (kernel output): pools_<c>.npz with formula (str), off (formula -> entry 
 InChIKey first block), fp (packed 2,048 bits), doc (float16), kind (0 documented, 1 random), row (index row),
 same_formula (bool); pools_<c>_report.json.
 
-usage: python tools/s2/build_pools.py OUT_DIR SHARD NSHARD [K_DOC K_RND]
+usage: python tools/s2/build_pools.py OUT_DIR SHARD NSHARD [K_DOC K_RND [SLUG_PREFIX]]
+       (SLUG_PREFIX default casmi26-s2-pools; a larger pool set gets its own prefix, e.g. casmi26-s2-pools64, so the
+       training kernels that attach the first set keep their inputs)
 """
 from __future__ import annotations
 
@@ -126,12 +128,13 @@ def main() -> None:
     out, c, n = Path(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
     k_doc = int(sys.argv[4]) if len(sys.argv) > 4 else 16
     k_rnd = int(sys.argv[5]) if len(sys.argv) > 5 else 16
+    prefix = sys.argv[6] if len(sys.argv) > 6 else "casmi26-s2-pools"
     script = (TEMPLATE.replace("__C__", str(c)).replace("__N__", str(n))
               .replace("__K_DOC__", str(k_doc)).replace("__K_RND__", str(k_rnd)))
     ast.parse(script)
     out.mkdir(parents=True, exist_ok=True)
     (out / "s2_pools.py").write_text(script)
-    meta = {"id": f"adityachauhanx/casmi26-s2-pools-{c}", "title": f"casmi26 s2 pools {c}", "code_file": "s2_pools.py",
+    meta = {"id": f"adityachauhanx/{prefix}-{c}", "title": f"{prefix.replace('-', ' ')} {c}", "code_file": "s2_pools.py",
             "language": "python", "kernel_type": "script", "is_private": True, "enable_gpu": False, "enable_tpu": False,
             "enable_internet": False, "dataset_sources": ["sanpier/casmi-spectrum-model-v1", "metric/rdkit-2026-3-3-wheel"],
             "competition_sources": ["enveda-CASMI26-molecule-id-mass-spectra"],
