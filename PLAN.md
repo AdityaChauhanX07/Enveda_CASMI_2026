@@ -173,6 +173,13 @@ Then `casmi26-s2-train`: a CPU smoke run, then one GPU run (~1-1.75 h: kit recip
 same split, refit of the better one). Adopt only if the novelty-holdout PubChem MRR and the panel's fused MRR both
 beat the kit-recipe baseline; LB test as N2 with `--ours=adityachauhanx/casmi26-s2-train` after N2 itself is scored.
 
+**Result (GPU run, 1.14 h):** at 64 epochs each, PubChem negatives raise the novelty-holdout PubChem MRR 0.660 ->
+**0.697** (top-1 0.545 -> 0.590; ahead at every evaluation), panel model alone 0.132 -> 0.140, panel fused 0.286 ->
+0.284 (within the 0.01 guard); the kit's own diagnostic (training-structure decoys) drops 0.515 -> 0.479. Refit:
+kit + PubChem, 80 epochs, all structures -> `casmi26-s2-train` `s2_model/`. Next: C1y (C1u + S2) vs C1z (C1u + v80)
+vs C1x (C1u + public 16-epoch model) on the LB (free); if S2 >= v80 there, N2-S2 (`casmi26-n2s-net035-s2`, built:
+N2's code with S2 in the second-scorer slot) after N2 next week.
+
 Earlier (2026-11-12):
 
 1. Pull alexchilton `casmi26-lb-0-480-neural-ensemble` (`kaggle kernels pull -m`), re-id to own account,
