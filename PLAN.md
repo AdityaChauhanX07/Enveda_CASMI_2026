@@ -180,6 +180,20 @@ kit + PubChem, 80 epochs, all structures -> `casmi26-s2-train` `s2_model/`. Next
 vs C1x (C1u + public 16-epoch model) on the LB (free); if S2 >= v80 there, N2-S2 (`casmi26-n2s-net035-s2`, built:
 N2's code with S2 in the second-scorer slot) after N2 next week.
 
+**LB (2026-11-19):** C1x 0.336, C1z 0.334, **C1y 0.352** against their base C1u 0.347: the kit-style scorers hurt C1
+(-0.011 / -0.013) and S2 helps (+0.005; +0.018 over v80). First LB-positive idea of ours since C1j.
+
+**2026-11-19 — the public frontier moved to 0.495 / 0.496** (303 teams >= 0.495, 20 >= 0.507; we are at 0.487).
+taeyangg4's 0.495 is our own 0.487 base + three cells (N-1c D-L1 network, FR 3-25 learned fragment re-ranker, P5 tail)
++ a GNPS extlib rebuild; heliosli's 0.496 is the 0.477 base + their isomer reranker, joint ranker with RT, M5 isomer
+judgement and FRIGID de novo candidates (~8.5 h a run). N2 (0.492) is superseded. GPU this week: 30.73 of 30 h used.
+Order after the Sat Nov 21 reset (each needs the user's OK; ~6-7 GPU h a scoring run):
+1. **T1** `casmi26-t1-tae495` = taeyangg4's 0.495 verbatim on our account (built): the frontier + the control.
+2. **T2** `casmi26-t2-tae495-s2` = T1 with S2 in place of v80 (built; notebook byte-identical to T1).
+3. S2 copies (seed 2, ...) for an all-S2 neural blend (T3), trained on GPU (~27 min each) or on a TPU VM's host CPU
+   if the smoke run shows it is fast enough (TPU quota is separate: 16.7 of 20 h left this week).
+4. Later: heliosli's 0.496 as a second branch for the finals; porting its layers onto T1.
+
 Earlier (2026-11-12):
 
 1. Pull alexchilton `casmi26-lb-0-480-neural-ensemble` (`kaggle kernels pull -m`), re-id to own account,

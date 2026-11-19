@@ -22,7 +22,7 @@ Output (kernel output, s2_model/): final_model.pt, config_used.json, config.json
 inference.py (the kit's, unchanged), holdout_<stage>_best.pt, s2_report.json.
 
 usage: python tools/s2/build_train.py OUT_DIR [--smoke] [--gpu] [--stages=A:kit:64,B:kit+pc:64|none] [--refit=auto:80]
-       [--hours=1.75] [--val-every=4] [--seed=0] [--slug=casmi26-s2-train]
+       [--hours=1.75] [--val-every=4] [--seed=0] [--slug=casmi26-s2-train] [--tpu] [--threads=N]
 A second copy for an ensemble: --stages=none --refit=kit+pc:80 --seed=1000 --slug=casmi26-s2-train-seed2 (refit only,
 no holdout stages; the first run already chose the recipe).
 Epochs: the kit trains 16 (validation still rising); the fork's second scorer (the kit at up to 80 epochs) stopped at 56
@@ -45,6 +45,7 @@ def log(*a):
     print(f"[{time.time() - T0:7.0f}s]", *a, flush=True)
 SMOKE, STAGES, REFIT, HOURS, VAL_EVERY, PMAX, GAMMAS = __SMOKE__, __STAGES__, __REFIT__, __HOURS__, __VAL_EVERY__, 32, (0.25, 0.5, 1.0, 2.0)
 SEED_OFF = __SEED__                              # 0 = the first run; another value trains an independent copy (ensembles)
+THREADS = __THREADS__                            # CPU threads (0 = all cores: a TPU VM's host CPU trains the small kit model)
 DEADLINE = T0 + HOURS * 3600
 kit = Path(sorted(glob.glob("/kaggle/input/**/casmi_spectrum_model_v1/train.py", recursive=True), key=len)[0]).parent
 sys.path.insert(0, str(kit))
@@ -57,7 +58,8 @@ if SMOKE:
     cfg.update(steps_per_epoch=12, max_validation_molecules=60)
 OUT = Path("/kaggle/working/s2_model"); OUT.mkdir(parents=True, exist_ok=True)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.set_num_threads(min(4, os.cpu_count() or 1))
+torch.set_num_threads(THREADS or (os.cpu_count() or 1))
+log("cpu cores", os.cpu_count(), "| torch threads", torch.get_num_threads())
 log("device", device, torch.cuda.get_device_name(0) if device.type == "cuda" else "", "| torch", torch.__version__)
 data = kt.Data(cfg)
 data.x = np.array(data.x); data.meta = np.array(data.meta); data.fp = np.load(cache / "fingerprints.npy")
@@ -307,7 +309,8 @@ log("done", json.dumps({s["name"]: (s["best_pc_mrr"], s["best_epoch"]) for s in 
 def main() -> None:
     out = Path(sys.argv[1])
     args = dict(a[2:].split("=", 1) if "=" in a else (a[2:], "1") for a in sys.argv[2:] if a.startswith("--"))
-    smoke, gpu = "smoke" in args, "gpu" in args
+    smoke, gpu, tpu = "smoke" in args, "gpu" in args, "tpu" in args
+    assert not (gpu and tpu)
     stages = []
     for item in [s for s in args.get("stages", "A:kit:64,B:kit+pc:64").split(",") if s and s != "none"]:
         name, neg, ep = item.split(":")
@@ -318,24 +321,27 @@ def main() -> None:
         neg, ep = args.get("refit", "auto:80").split(":")
         refit = dict(neg=neg, epochs=int(ep), reserve_hours=0.05 if smoke else 0.6)
     hours = float(args.get("hours", 1.75)); val_every = int(args.get("val-every", 4)); seed = int(args.get("seed", 0))
+    threads = int(args.get("threads", 0 if tpu else 4))
     script = (TEMPLATE.replace("__SMOKE__", str(smoke)).replace("__STAGES__", repr(stages))
               .replace("__REFIT__", repr(refit)).replace("__HOURS__", repr(hours)).replace("__VAL_EVERY__", str(val_every))
-              .replace("__SEED__", str(seed)))
+              .replace("__SEED__", str(seed)).replace("__THREADS__", str(threads)))
     ast.parse(script)
     out.mkdir(parents=True, exist_ok=True)
     (out / "s2_train.py").write_text(script)
     slug = args.get("slug", "casmi26-s2-train") + ("-smoke" if smoke else "")
     meta = {"id": f"adityachauhanx/{slug}", "title": slug.replace("-", " "), "code_file": "s2_train.py",
-            "language": "python", "kernel_type": "script", "is_private": True, "enable_gpu": gpu, "enable_tpu": False,
+            "language": "python", "kernel_type": "script", "is_private": True, "enable_gpu": gpu, "enable_tpu": tpu,
             "enable_internet": False, "dataset_sources": ["sanpier/casmi-spectrum-model-v1", "adityachauhanx/casmi26-s2-panel"],
             "competition_sources": ["enveda-CASMI26-molecule-id-mass-spectra"],
             "kernel_sources": ["adityachauhanx/casmi26-s2-prep"] + [f"adityachauhanx/casmi26-s2-pools-{c}" for c in range(4)],
             "model_sources": []}
     if gpu:
         meta["machine_shape"] = "NvidiaTeslaT4"
+    if tpu:                                      # no CUDA there: the run trains on the VM's host CPU
+        meta["machine_shape"] = "TpuV5E8"
     (out / "kernel-metadata.json").write_text(json.dumps(meta, indent=1))
     print("written", out / "s2_train.py", len(script), "bytes", "| stages", stages, "| refit", refit, "| hours", hours,
-          "| val every", val_every, "| seed offset", seed, "| slug", slug)
+          "| val every", val_every, "| seed offset", seed, "| slug", slug, "| threads", threads or "all", "| tpu" if tpu else "")
 
 
 if __name__ == "__main__":
