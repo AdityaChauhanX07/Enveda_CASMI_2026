@@ -11,8 +11,10 @@ third neural opinion: after the fork's 0.5 z(public) + 0.5 z(ours) blend, neural
 within each molecule like the blend; any failure keeps the fork's own blend.
 
 usage: python tools/build_fork_variant.py BASE_KERNEL_DIR OUT_DIR SLUG [--pop_w=X] [--np_w=X] [--spec_w=X]
-       [--pop_lam=X] [--poolpop_mu=X] [--pop_tau=X] [--pc_np=B] [--s2m=G] [--w_top=X] [--w_mid=X] [--n1c=LAM] [--dreams=L[:k=v,...]] [--commit=fast|smoke]
+       [--pop_lam=X] [--poolpop_mu=X] [--pop_tau=X] [--pc_np=B] [--s2m=G] [--w_top=X] [--w_mid=X] [--n1c=LAM] [--dreams=L[:k=v,...]] [--ours=OWNER/KERNEL] [--commit=fast|smoke]
 --pc_np=B: the frozen PubChem channel's prior keeps only natural-product membership (bonus B x POP_LAM)
+--ours=OWNER/KERNEL: the fork's second neural scorer (its `_swap_to_ours` loads the attached source with
+           final_model.pt + config_used.json) comes from this kernel instead of popwenman's casmi26-scorer-train-v80
 --n1c=LAM: the public in-test network rerank (analyticaobscura's N-1c; LAM 0.35 = the public 0.492 recipe) before the
            external-library overlay (bases with that overlay, e.g. Fork B)
 """
@@ -214,9 +216,13 @@ def main() -> None:
     if "dreams" in args:                                 # train-library reference embeddings (kernel outputs)
         meta["kernel_sources"] = list(meta.get("kernel_sources", [])) + [k for k in add_overlay.parse_dreams(args["dreams"])[1]
                                                                           if k not in meta.get("kernel_sources", [])]
+    if "ours" in args:                                   # second neural scorer from another training kernel
+        ks = list(meta.get("kernel_sources", []))
+        assert "popwenman/casmi26-scorer-train-v80" in ks, f"the base attaches no v80 scorer: {ks}"
+        meta["kernel_sources"] = [args["ours"] if k == "popwenman/casmi26-scorer-train-v80" else k for k in ks]
     (out / "kernel-metadata.json").write_text(json.dumps(meta, indent=1))
     print("written", out / nb_path.name, "| fusion", (pop_w, spec_w, np_w),
-          {k: args[k] for k in ("pop_lam", "poolpop_mu", "pop_tau", "pc_np", "s2m", "w_top", "w_mid", "n1c", "dreams", "commit") if k in args})
+          {k: args[k] for k in ("pop_lam", "poolpop_mu", "pop_tau", "pc_np", "s2m", "w_top", "w_mid", "n1c", "dreams", "ours", "commit") if k in args})
 
 
 if __name__ == "__main__":

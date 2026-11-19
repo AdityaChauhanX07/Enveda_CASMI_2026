@@ -167,6 +167,14 @@ any dev box for ranker training. Big artifacts go to private Kaggle datasets, co
 
 ## 7. Immediate next steps
 
+**2026-11-19 — S2, a stronger second scorer for the fork (the user's request).** Data on Kaggle CPU (free):
+`casmi26-s2-prep` (kit cache + novelty holdout + panel lists) and `casmi26-s2-pools-0..3` (PubChem isomer pools).
+Then `casmi26-s2-train`: a CPU smoke run, then one GPU run (~1-1.75 h: kit recipe vs kit + PubChem negatives on the
+same split, refit of the better one). Adopt only if the novelty-holdout PubChem MRR and the panel's fused MRR both
+beat the kit-recipe baseline; LB test as N2 with `--ours=adityachauhanx/casmi26-s2-train` after N2 itself is scored.
+
+Earlier (2026-11-12):
+
 1. Pull alexchilton `casmi26-lb-0-480-neural-ensemble` (`kaggle kernels pull -m`), re-id to own account,
    keep docker image + inputs, push private, commit run, submit; record hidden-run time.
 2. Download `casmi26-natural-product-panel-benchmark`, `casmi26-fold-safe-fpnet` and the identity-disjoint
