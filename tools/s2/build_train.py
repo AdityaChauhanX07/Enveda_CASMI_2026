@@ -21,8 +21,10 @@ Stages:
 Output (kernel output, s2_model/): final_model.pt, config_used.json, config.json / model.py / features.py /
 inference.py (the kit's, unchanged), holdout_<stage>_best.pt, s2_report.json.
 
-usage: python tools/s2/build_train.py OUT_DIR [--smoke] [--gpu] [--stages=A:kit:64,B:kit+pc:64] [--refit=auto:80]
-       [--hours=1.75] [--val-every=4]
+usage: python tools/s2/build_train.py OUT_DIR [--smoke] [--gpu] [--stages=A:kit:64,B:kit+pc:64|none] [--refit=auto:80]
+       [--hours=1.75] [--val-every=4] [--seed=0] [--slug=casmi26-s2-train]
+A second copy for an ensemble: --stages=none --refit=kit+pc:80 --seed=1000 --slug=casmi26-s2-train-seed2 (refit only,
+no holdout stages; the first run already chose the recipe).
 Epochs: the kit trains 16 (validation still rising); the fork's second scorer (the kit at up to 80 epochs) stopped at 56
 with its best at 52 (kit diagnostic 0.484 at 16 -> 0.660 at 52), so the stages run 64 and the refit up to 80.
 """
@@ -42,6 +44,7 @@ T0 = time.time()
 def log(*a):
     print(f"[{time.time() - T0:7.0f}s]", *a, flush=True)
 SMOKE, STAGES, REFIT, HOURS, VAL_EVERY, PMAX, GAMMAS = __SMOKE__, __STAGES__, __REFIT__, __HOURS__, __VAL_EVERY__, 32, (0.25, 0.5, 1.0, 2.0)
+SEED_OFF = __SEED__                              # 0 = the first run; another value trains an independent copy (ensembles)
 DEADLINE = T0 + HOURS * 3600
 kit = Path(sorted(glob.glob("/kaggle/input/**/casmi_spectrum_model_v1/train.py", recursive=True), key=len)[0]).parent
 sys.path.insert(0, str(kit))
@@ -175,7 +178,7 @@ def evaluate(model):
     return res
 
 def train_stage(name, neg, epochs, refit=False):
-    seed = cfg["seed"] + (1 if refit else 0)
+    seed = cfg["seed"] + SEED_OFF + (1 if refit else 0)
     kt.seed_all(seed); rng = np.random.default_rng(seed)
     ids = np.arange(N_MOL) if refit else data.train
     allowed = np.zeros(N_MOL, bool); allowed[ids] = True
@@ -290,7 +293,8 @@ if REFIT:
         ep = 1
     log("refit on every structure:", neg, ep, "epochs")
     report["refit"] = train_stage("refit", neg, ep, refit=True)
-    cfg_used = dict(cfg, s2=dict(negatives=neg, refit_epochs=ep, pubchem_pool=PMAX, stages=[s["name"] for s in report["stages"]]))
+    cfg_used = dict(cfg, s2=dict(negatives=neg, refit_epochs=ep, pubchem_pool=PMAX, stages=[s["name"] for s in report["stages"]],
+                                 seed_offset=SEED_OFF))
     (OUT / "config_used.json").write_text(json.dumps(cfg_used, indent=1))
 for f in ("config.json", "model.py", "features.py", "inference.py"):
     shutil.copy2(kit / f, OUT / f)
@@ -305,7 +309,7 @@ def main() -> None:
     args = dict(a[2:].split("=", 1) if "=" in a else (a[2:], "1") for a in sys.argv[2:] if a.startswith("--"))
     smoke, gpu = "smoke" in args, "gpu" in args
     stages = []
-    for item in args.get("stages", "A:kit:64,B:kit+pc:64").split(","):
+    for item in [s for s in args.get("stages", "A:kit:64,B:kit+pc:64").split(",") if s and s != "none"]:
         name, neg, ep = item.split(":")
         assert neg in ("kit", "kit+pc", "pc"), neg
         stages.append(dict(name=name, neg=neg, epochs=2 if smoke else int(ep)))
@@ -313,13 +317,14 @@ def main() -> None:
     if args.get("refit", "auto:80") != "none":
         neg, ep = args.get("refit", "auto:80").split(":")
         refit = dict(neg=neg, epochs=int(ep), reserve_hours=0.05 if smoke else 0.6)
-    hours = float(args.get("hours", 1.75)); val_every = int(args.get("val-every", 4))
+    hours = float(args.get("hours", 1.75)); val_every = int(args.get("val-every", 4)); seed = int(args.get("seed", 0))
     script = (TEMPLATE.replace("__SMOKE__", str(smoke)).replace("__STAGES__", repr(stages))
-              .replace("__REFIT__", repr(refit)).replace("__HOURS__", repr(hours)).replace("__VAL_EVERY__", str(val_every)))
+              .replace("__REFIT__", repr(refit)).replace("__HOURS__", repr(hours)).replace("__VAL_EVERY__", str(val_every))
+              .replace("__SEED__", str(seed)))
     ast.parse(script)
     out.mkdir(parents=True, exist_ok=True)
     (out / "s2_train.py").write_text(script)
-    slug = "casmi26-s2-train" + ("-smoke" if smoke else "")
+    slug = args.get("slug", "casmi26-s2-train") + ("-smoke" if smoke else "")
     meta = {"id": f"adityachauhanx/{slug}", "title": slug.replace("-", " "), "code_file": "s2_train.py",
             "language": "python", "kernel_type": "script", "is_private": True, "enable_gpu": gpu, "enable_tpu": False,
             "enable_internet": False, "dataset_sources": ["sanpier/casmi-spectrum-model-v1", "adityachauhanx/casmi26-s2-panel"],
@@ -330,7 +335,7 @@ def main() -> None:
         meta["machine_shape"] = "NvidiaTeslaT4"
     (out / "kernel-metadata.json").write_text(json.dumps(meta, indent=1))
     print("written", out / "s2_train.py", len(script), "bytes", "| stages", stages, "| refit", refit, "| hours", hours,
-          "| val every", val_every)
+          "| val every", val_every, "| seed offset", seed, "| slug", slug)
 
 
 if __name__ == "__main__":
