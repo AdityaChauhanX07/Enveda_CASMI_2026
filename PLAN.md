@@ -190,11 +190,12 @@ judgement and FRIGID de novo candidates (~8.5 h a run). N2 (0.492) is superseded
 Order after the Sat Nov 21 reset (each needs the user's OK; ~6-7 GPU h a scoring run):
 1. **T1** `casmi26-t1-tae495` = taeyangg4's 0.495 verbatim on our account (built): the frontier + the control.
 2. **T2** `casmi26-t2-tae495-s2` = T1 with S2 in place of v80 (built; notebook byte-identical to T1).
-3. S2 copies (seed 2, ...) for an all-S2 neural blend (T3), trained on GPU (~27 min each) or on a TPU VM's host CPU
-   if the smoke run shows it is fast enough (TPU quota is separate: 16.7 of 20 h left this week).
+3. S2 copies (seed 2, ...) for an all-S2 neural blend (T3), trained on GPU (~27 min each). The TPU-VM host-CPU
+   smoke never left the queue (10:31-13:31 UTC on Nov 19) and was deleted, so S2 copies use the GPU.
 4. **U1** `casmi26-u1-union` (built, `tools/build_union.py`): T1's base and layers up to its external-library overlay +
    heliosli's layers (FRIGID, rr3 FREEZE, p1, cvjoint, M5), FR / P5 left out; both run the same pinned pipeline.
-   ~0.75 h smoke commit + ~8.5-8.9 h scoring. The bet for the second final; `casmi26-u1s-union-s2` = U1 with S2.
+   Library guard: T1's external-library rank-1 picks are put back at rank 1 after heliosli's layers (which never saw
+   them). ~0.75 h smoke commit + ~8.5-8.9 h scoring. The bet for the second final; `casmi26-u1s-union-s2` = U1 with S2.
 
 Earlier (2026-11-12):
 
