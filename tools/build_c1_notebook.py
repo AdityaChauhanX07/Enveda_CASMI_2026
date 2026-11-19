@@ -16,6 +16,7 @@ usage: python tools/build_c1_notebook.py OUT_DIR [--edit [--support-gate | --sup
  --frag=L[:TOL]: fragment explanation at weight L (match tolerance TOL Da, default 0.01); --slug=NAME: kernel name override;
  --library-only: probe kernel casmi26-c1lib-probe - lists of train.parquet library hits (cosine >= 0.5) only, no overlays;
  --san=G: sanpier's spectrum model fused at score level over each whole shortlist at weight G (pooled scale);
+ --sanbundle=s2: with --san, the S2 scorer (kernel output of casmi26-s2-train, same architecture) instead of sanpier's;
  --npl=E: natural-product likeness (RDKit Contrib NP_Score) at weight E;
  --libfirst=T: library hits with cosine >= T lead their lists;
  --set=name=value[,name=value...]: any other c1_pipeline parameter (numbers), e.g. --set=short_n=150,np_keep=150;
@@ -92,7 +93,7 @@ print('C1 SETUP:', json.dumps(dict(comp=str(COMP), index=str(INDEX), foldsafe=st
 RUN = '''# ── C1 candidate lists: own PubChem index + fold-safe FPNets + documentation, library hits first ──
 _left = 8.5 * 3600 - (time.time() - NB_T0)
 try:
-    _nb = sorted(glob.glob(str(INPUT / '**/casmi_spectrum_model_v1/inference.py'), recursive=True), key=len) if {neural!r} else []
+    _nb = sorted(glob.glob(str(INPUT / {nb_glob!r}), recursive=True), key=len) if {neural!r} else []
     _s2m = sorted(glob.glob(str(INPUT / '**/casmi26-spec2mol/spec2mol.pt'), recursive=True), key=len) if {s2m_gamma!r} else []
     _npt = sorted(glob.glob(str(INPUT / '**/casmi26-natural-product-knowledge-table/natural_products.parquet'), recursive=True), key=len) if {np_beta!r} else []
     _coco = sorted(glob.glob(str(INPUT / '**/coconut_csv_lite*.csv'), recursive=True), key=len) if {np_beta!r} else []
@@ -124,7 +125,7 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
           np_window: bool = False, w_doc: float | None = None, beta: float | None = None, coco: bool = False,
           lib_beta: float | None = None, slug: str | None = None, frag: str | None = None, library_only: bool = False,
           san: float | None = None, npl: float | None = None, lib_first: float | None = None, extra_set: str | None = None,
-          dreams: str | None = None) -> Path:
+          dreams: str | None = None, san_bundle: str | None = None) -> Path:
     modules = {f"v4/{n}.py": (V4 / f"{n}.py").read_text() for n in ("chem", "spectra", "fpnet")}
     for n in ("edit_overlay", "c1_pipeline", "fragments"):
         modules[f"{n}.py"] = (ROOT / "casmi" / f"{n}.py").read_text()
@@ -178,7 +179,7 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
     credit += ("; COCONUT (Chandrasekhar et al., NAR 2025; CC0), the LOTUS initiative (Rutz et al., eLife 2022) and NPAtlas "
                "(van Santen et al., NAR 2022)" if np_prior else "")
     intro = INTRO.format(s2m_line=extra, s2m_credit=credit)
-    cells = [cell("markdown", intro), cell("code", SETUP.format(modules=modules)), cell("code", RUN.format(neural=bool(neural or san), s2m_gamma=S2M_GAMMA if s2m else 0.0, np_beta=nb_beta if np_prior else 0.0,
+    cells = [cell("markdown", intro), cell("code", SETUP.format(modules=modules)), cell("code", RUN.format(neural=bool(neural or san), nb_glob=('**/s2_model/inference.py' if san_bundle == 's2' else '**/casmi_spectrum_model_v1/inference.py'), s2m_gamma=S2M_GAMMA if s2m else 0.0, np_beta=nb_beta if np_prior else 0.0,
                                                                             np_window=int(np_prior and np_window),
                                                                             run_extra=run_extra))]
     if not library_only:
@@ -203,7 +204,7 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
     meta = {"id": f"adityachauhanx/{slug}", "title": slug.replace("-", " "), "code_file": path.name,
             "language": "python", "kernel_type": "notebook", "is_private": True, "enable_gpu": False, "enable_tpu": False,
             "enable_internet": False, "dataset_sources": ["dmitriigluzdov/casmi26-fold-safe-fpnet", "metric/rdkit-2026-3-3-wheel"]
-                                                         + (["sanpier/casmi-spectrum-model-v1"] if (neural or san) else [])
+                                                         + (["sanpier/casmi-spectrum-model-v1"] if (neural or san) and san_bundle != "s2" else [])
                                                          # spec2mol (casmi26-spec2mol: train.py / prep.py inside); nothing
                                                          # else of this dataset is loaded
                                                          + (["dmitriigluzdov/casmi26-attributed-v4g-reproduction-assets"] if s2m else [])
@@ -211,7 +212,8 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
                                                              "pri2si17/coconut-natural-products-2026-09"] if np_prior else [])
                                                          + (["hengck23/hengck23-dreams-enveda-casmi26"] if dreams else []),
             "competition_sources": ["enveda-CASMI26-molecule-id-mass-spectra"],
-            "kernel_sources": ["adityachauhanx/casmi26-pubchem-index-build"] + dreams_kernels, "model_sources": []}
+            "kernel_sources": ["adityachauhanx/casmi26-pubchem-index-build"] + dreams_kernels
+                              + (["adityachauhanx/casmi26-s2-train"] if san_bundle == "s2" else []), "model_sources": []}
     (out_dir / "kernel-metadata.json").write_text(json.dumps(meta, indent=1))
     return path
 
@@ -237,4 +239,5 @@ if __name__ == "__main__":
                            npl=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--npl=")), None),
                            lib_first=next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--libfirst=")), None),
                            extra_set=next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--set=")), None),
-                           dreams=next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--dreams=")), None)))
+                           dreams=next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--dreams=")), None),
+                           san_bundle=next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--sanbundle=")), None)))

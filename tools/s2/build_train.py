@@ -176,7 +176,9 @@ def train_stage(name, neg, epochs, refit=False):
     ids = np.arange(N_MOL) if refit else data.train
     allowed = np.zeros(N_MOL, bool); allowed[ids] = True
     use_kit, use_pc = "kit" in neg, "pc" in neg
-    pools = kt.hard_pools(mol, ids, cfg["negative_pool"])
+    if refit not in POOLS:                        # the holdout stages share one split: build its pools once
+        tp = time.time(); POOLS[refit] = kt.hard_pools(mol, ids, cfg["negative_pool"]); log("kit pools", len(POOLS[refit]), f"{time.time() - tp:.0f}s")
+    pools = POOLS[refit]
     model = SpectrumCandidateModel(cfg).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
     use_amp = device.type == "cuda"; scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
@@ -253,6 +255,7 @@ def train_stage(name, neg, epochs, refit=False):
     return dict(name=name, negatives=neg, epochs=epochs, best_pc_mrr=best, best_epoch=best_ep, history=hist, stopped=stopped)
 
 PATIENCE = 3                                     # evaluations without a better novelty-holdout PubChem MRR
+POOLS = {}
 REFIT_RESERVE = REFIT["reserve_hours"] * 3600 if REFIT else 0
 report = dict(stages=[], cfg=cfg)
 for st in STAGES:
