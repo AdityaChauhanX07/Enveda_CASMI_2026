@@ -17,6 +17,8 @@ usage: python tools/build_c1_notebook.py OUT_DIR [--edit [--support-gate | --sup
  --library-only: probe kernel casmi26-c1lib-probe - lists of train.parquet library hits (cosine >= 0.5) only, no overlays;
  --san=G: sanpier's spectrum model fused at score level over each whole shortlist at weight G (pooled scale);
  --sanbundle=s2: with --san, the S2 scorer (kernel output of casmi26-s2-train, same architecture) instead of sanpier's;
+ --sanbundle=v80: with --san, the fork's second scorer (popwenman/casmi26-scorer-train-v80: the kit's code and config at
+              up to 80 epochs, public notebook), run with the kit's inference files;
  --npl=E: natural-product likeness (RDKit Contrib NP_Score) at weight E;
  --libfirst=T: library hits with cosine >= T lead their lists;
  --set=name=value[,name=value...]: any other c1_pipeline parameter (numbers), e.g. --set=short_n=150,np_keep=150;
@@ -94,6 +96,12 @@ RUN = '''# ── C1 candidate lists: own PubChem index + fold-safe FPNets + doc
 _left = 8.5 * 3600 - (time.time() - NB_T0)
 try:
     _nb = sorted(glob.glob(str(INPUT / {nb_glob!r}), recursive=True), key=len) if {neural!r} else []
+    if _nb and {nb_stage!r}:                     # a kit-architecture checkpoint shipped without the kit's inference files
+        _kit = Path(sorted(glob.glob(str(INPUT / '**/casmi_spectrum_model_v1/inference.py'), recursive=True), key=len)[0]).parent
+        _stage = Path('/tmp/nb_bundle'); _stage.mkdir(parents=True, exist_ok=True)
+        for _f in ('inference.py', 'model.py', 'features.py', 'config.json'):
+            shutil.copy2(_kit / _f, _stage / _f)
+        shutil.copy2(_nb[0], _stage / 'final_model.pt'); _nb = [str(_stage / 'inference.py')]
     _s2m = sorted(glob.glob(str(INPUT / '**/casmi26-spec2mol/spec2mol.pt'), recursive=True), key=len) if {s2m_gamma!r} else []
     _npt = sorted(glob.glob(str(INPUT / '**/casmi26-natural-product-knowledge-table/natural_products.parquet'), recursive=True), key=len) if {np_beta!r} else []
     _coco = sorted(glob.glob(str(INPUT / '**/coconut_csv_lite*.csv'), recursive=True), key=len) if {np_beta!r} else []
@@ -148,8 +156,11 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
     run_extra += ", np_coconut_extra=1" if (coco and np_prior) else ""
     if san:
         run_extra += f", san_gamma={float(san)!r}"
-        extra += (f"- **Spectrum model (sanpier/casmi-spectrum-model-v1, training code public):** its score joins each whole "
-                  f"shortlist at weight {float(san)} (pooled scale).\n")
+        _who = {"s2": "our S2 scorer: the public kit's architecture retrained with PubChem isomer negatives, "
+                      "adityachauhanx/casmi26-s2-train, code public",
+                "v80": "popwenman/casmi26-scorer-train-v80: the public kit retrained to up to 80 epochs, code public"}
+        extra += (f"- **Spectrum model ({_who.get(san_bundle, 'sanpier/casmi-spectrum-model-v1, training code public')}):** "
+                  f"its score joins each whole shortlist at weight {float(san)} (pooled scale).\n")
     if npl:
         run_extra += f", npl_eta={float(npl)!r}"
         extra += (f"- **Natural-product likeness** (Ertl et al. 2008, RDKit Contrib NP_Score): + {float(npl)} x the "
@@ -179,7 +190,7 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
     credit += ("; COCONUT (Chandrasekhar et al., NAR 2025; CC0), the LOTUS initiative (Rutz et al., eLife 2022) and NPAtlas "
                "(van Santen et al., NAR 2022)" if np_prior else "")
     intro = INTRO.format(s2m_line=extra, s2m_credit=credit)
-    cells = [cell("markdown", intro), cell("code", SETUP.format(modules=modules)), cell("code", RUN.format(neural=bool(neural or san), nb_glob=('**/s2_model/inference.py' if san_bundle == 's2' else '**/casmi_spectrum_model_v1/inference.py'), s2m_gamma=S2M_GAMMA if s2m else 0.0, np_beta=nb_beta if np_prior else 0.0,
+    cells = [cell("markdown", intro), cell("code", SETUP.format(modules=modules)), cell("code", RUN.format(neural=bool(neural or san), nb_glob={'s2': '**/s2_model/inference.py', 'v80': '**/casmi_spectrum_model_ours_v80/final_model.pt'}.get(san_bundle, '**/casmi_spectrum_model_v1/inference.py'), nb_stage=san_bundle == 'v80', s2m_gamma=S2M_GAMMA if s2m else 0.0, np_beta=nb_beta if np_prior else 0.0,
                                                                             np_window=int(np_prior and np_window),
                                                                             run_extra=run_extra))]
     if not library_only:
@@ -213,7 +224,8 @@ def build(out_dir: Path, edit_params: dict, neural: bool = False, s2m: bool = Fa
                                                          + (["hengck23/hengck23-dreams-enveda-casmi26"] if dreams else []),
             "competition_sources": ["enveda-CASMI26-molecule-id-mass-spectra"],
             "kernel_sources": ["adityachauhanx/casmi26-pubchem-index-build"] + dreams_kernels
-                              + (["adityachauhanx/casmi26-s2-train"] if san_bundle == "s2" else []), "model_sources": []}
+                              + (["adityachauhanx/casmi26-s2-train"] if san_bundle == "s2" else [])
+                              + (["popwenman/casmi26-scorer-train-v80"] if san_bundle == "v80" else []), "model_sources": []}
     (out_dir / "kernel-metadata.json").write_text(json.dumps(meta, indent=1))
     return path
 
