@@ -139,7 +139,8 @@ log("split", counts, "| validation: max Tanimoto to train (first 200) max", roun
 del bvs, train_bvs, val_bvs
 
 # 3. the panel's C1 shortlists, fingerprinted
-P = json.loads(gzip.decompress(Path(sorted(glob.glob("/kaggle/input/**/panel_lists.json.gz", recursive=True), key=len)[0]).read_bytes()))
+_pl = Path(sorted(glob.glob("/kaggle/input/**/panel_lists.json*", recursive=True), key=len)[0])   # Kaggle unpacks .gz uploads
+P = json.loads(gzip.decompress(_pl.read_bytes()) if _pl.suffix == ".gz" else _pl.read_bytes())
 lists = P["c2"]["lists"]
 cand = sorted({s for v in lists.values() for s, _ in v})
 st = structures(cand, "panel candidates")

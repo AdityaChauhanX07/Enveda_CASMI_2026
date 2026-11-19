@@ -13,15 +13,18 @@ Stages:
       structure within Tanimoto 0.6 of these molecules: the hidden answers' regime);
     - novelty holdout, kit diagnostic: the kit's own check (true structure + 255 known structures of the same formula or
       nearest mass);
-    - panel: C1's real shortlists of the 250 panel molecules (answer's library spectra hidden), scored from their
+    - panel: C1's real shortlists of the 250 panel molecules (answer's library spectra hidden; fingerprinted by
+      s2-prep, or the same files in casmi26-s2-panel), scored from their
       Enveda NP-example spectra: the model alone and fused with C1's score (z + gamma x z(model));
   refit: the chosen negatives on every structure (all splits) -> final_model.pt (+ config_used.json), the only file of
   that name in the output.
 Output (kernel output, s2_model/): final_model.pt, config_used.json, config.json / model.py / features.py /
 inference.py (the kit's, unchanged), holdout_<stage>_best.pt, s2_report.json.
 
-usage: python tools/s2/build_train.py OUT_DIR [--smoke] [--gpu] [--stages=A:kit:40,B:kit+pc:40] [--refit=auto:64]
-       [--hours=1.75]
+usage: python tools/s2/build_train.py OUT_DIR [--smoke] [--gpu] [--stages=A:kit:64,B:kit+pc:64] [--refit=auto:80]
+       [--hours=1.75] [--val-every=4]
+Epochs: the kit trains 16 (validation still rising); the fork's second scorer (the kit at up to 80 epochs) stopped at 56
+with its best at 52 (kit diagnostic 0.484 at 16 -> 0.660 at 52), so the stages run 64 and the refit up to 80.
 """
 from __future__ import annotations
 
@@ -38,7 +41,7 @@ from torch.nn import functional as F
 T0 = time.time()
 def log(*a):
     print(f"[{time.time() - T0:7.0f}s]", *a, flush=True)
-SMOKE, STAGES, REFIT, HOURS, VAL_EVERY, PMAX, GAMMAS = __SMOKE__, __STAGES__, __REFIT__, __HOURS__, 2, 32, (0.25, 0.5, 1.0, 2.0)
+SMOKE, STAGES, REFIT, HOURS, VAL_EVERY, PMAX, GAMMAS = __SMOKE__, __STAGES__, __REFIT__, __HOURS__, __VAL_EVERY__, 32, (0.25, 0.5, 1.0, 2.0)
 DEADLINE = T0 + HOURS * 3600
 kit = Path(sorted(glob.glob("/kaggle/input/**/casmi_spectrum_model_v1/train.py", recursive=True), key=len)[0]).parent
 sys.path.insert(0, str(kit))
@@ -95,7 +98,8 @@ for i in val_ids:
     ent = ent[emol[ent] != i]
     if len(ent):
         val_pc[int(i)] = ent
-pc_ = pd.read_parquet(cache / "panel_cands.parquet"); pcfp = np.load(cache / "panel_cand_fp.npy")
+pdir = Path(sorted(glob.glob("/kaggle/input/**/panel_cands.parquet", recursive=True), key=len)[0]).parent   # prep cache or s2-panel
+pc_ = pd.read_parquet(pdir / "panel_cands.parquet"); pcfp = np.load(pdir / "panel_cand_fp.npy")
 lib = spec.original_molecule_id.astype(str).to_numpy()
 panel_rows = {}
 for m in pc_.m.unique():
@@ -301,31 +305,32 @@ def main() -> None:
     args = dict(a[2:].split("=", 1) if "=" in a else (a[2:], "1") for a in sys.argv[2:] if a.startswith("--"))
     smoke, gpu = "smoke" in args, "gpu" in args
     stages = []
-    for item in args.get("stages", "A:kit:40,B:kit+pc:40").split(","):
+    for item in args.get("stages", "A:kit:64,B:kit+pc:64").split(","):
         name, neg, ep = item.split(":")
         assert neg in ("kit", "kit+pc", "pc"), neg
         stages.append(dict(name=name, neg=neg, epochs=2 if smoke else int(ep)))
     refit = None
-    if args.get("refit", "auto:64") != "none":
-        neg, ep = args.get("refit", "auto:64").split(":")
+    if args.get("refit", "auto:80") != "none":
+        neg, ep = args.get("refit", "auto:80").split(":")
         refit = dict(neg=neg, epochs=int(ep), reserve_hours=0.05 if smoke else 0.6)
-    hours = float(args.get("hours", 1.75))
+    hours = float(args.get("hours", 1.75)); val_every = int(args.get("val-every", 4))
     script = (TEMPLATE.replace("__SMOKE__", str(smoke)).replace("__STAGES__", repr(stages))
-              .replace("__REFIT__", repr(refit)).replace("__HOURS__", repr(hours)))
+              .replace("__REFIT__", repr(refit)).replace("__HOURS__", repr(hours)).replace("__VAL_EVERY__", str(val_every)))
     ast.parse(script)
     out.mkdir(parents=True, exist_ok=True)
     (out / "s2_train.py").write_text(script)
     slug = "casmi26-s2-train" + ("-smoke" if smoke else "")
     meta = {"id": f"adityachauhanx/{slug}", "title": slug.replace("-", " "), "code_file": "s2_train.py",
             "language": "python", "kernel_type": "script", "is_private": True, "enable_gpu": gpu, "enable_tpu": False,
-            "enable_internet": False, "dataset_sources": ["sanpier/casmi-spectrum-model-v1"],
+            "enable_internet": False, "dataset_sources": ["sanpier/casmi-spectrum-model-v1", "adityachauhanx/casmi26-s2-panel"],
             "competition_sources": ["enveda-CASMI26-molecule-id-mass-spectra"],
             "kernel_sources": ["adityachauhanx/casmi26-s2-prep"] + [f"adityachauhanx/casmi26-s2-pools-{c}" for c in range(4)],
             "model_sources": []}
     if gpu:
         meta["machine_shape"] = "NvidiaTeslaT4"
     (out / "kernel-metadata.json").write_text(json.dumps(meta, indent=1))
-    print("written", out / "s2_train.py", len(script), "bytes", "| stages", stages, "| refit", refit, "| hours", hours)
+    print("written", out / "s2_train.py", len(script), "bytes", "| stages", stages, "| refit", refit, "| hours", hours,
+          "| val every", val_every)
 
 
 if __name__ == "__main__":
