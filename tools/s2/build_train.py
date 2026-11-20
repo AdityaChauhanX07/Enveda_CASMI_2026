@@ -24,6 +24,8 @@ inference.py (the kit's, unchanged), holdout_<stage>_best.pt, s2_report.json.
 usage: python tools/s2/build_train.py OUT_DIR [--smoke] [--gpu] [--stages=A:kit:64,B:kit+pc:64|none] [--refit=auto:80]
        [--hours=1.75] [--val-every=4] [--seed=0] [--slug=casmi26-s2-train] [--tpu] [--threads=N]
        [--pmax=32] [--pools=casmi26-s2-pools]  (--pmax=64 --pools=casmi26-s2-pools64: the 32 + 32 pools)
+       [--baseline=casmi26-s2-train]  (attach that kernel and score its holdout_B_best.pt first, on this run's sets:
+                                       with other pools the PubChem-pool MRR is not comparable across runs otherwise)
 A second copy for an ensemble: --stages=none --refit=kit+pc:80 --seed=1000 --slug=casmi26-s2-train-seed2 (refit only,
 no holdout stages; the first run already chose the recipe).
 Epochs: the kit trains 16 (validation still rising); the fork's second scorer (the kit at up to 80 epochs) stopped at 56
@@ -46,6 +48,7 @@ def log(*a):
     print(f"[{time.time() - T0:7.0f}s]", *a, flush=True)
 SMOKE, STAGES, REFIT, HOURS, VAL_EVERY, PMAX, GAMMAS = __SMOKE__, __STAGES__, __REFIT__, __HOURS__, __VAL_EVERY__, __PMAX__, (0.25, 0.5, 1.0, 2.0)
 SEED_OFF = __SEED__                              # 0 = the first run; another value trains an independent copy (ensembles)
+BASELINE = __BASELINE__                          # kernel whose holdout_B_best.pt is scored first on this run's evaluation sets
 THREADS = __THREADS__                            # CPU threads (0 = all cores: a TPU VM's host CPU trains the small kit model)
 DEADLINE = T0 + HOURS * 3600
 kit = Path(sorted(glob.glob("/kaggle/input/**/casmi_spectrum_model_v1/train.py", recursive=True), key=len)[0]).parent
@@ -268,6 +271,15 @@ PATIENCE = 3                                     # evaluations without a better 
 POOLS = {}
 REFIT_RESERVE = REFIT["reserve_hours"] * 3600 if REFIT else 0
 report = dict(stages=[], cfg=cfg)
+if BASELINE:                                     # same split (same prep), so its holdout model is scored on identical sets
+    _bp = sorted(glob.glob(f"/kaggle/input/**/{BASELINE}/**/holdout_B_best.pt", recursive=True), key=len)
+    if _bp:
+        _bm = SpectrumCandidateModel(cfg).to(device)
+        _bm.load_state_dict(torch.load(_bp[0], map_location=device, weights_only=True)["state_dict"])
+        report["baseline"] = dict(file=_bp[0], **evaluate(_bm)); del _bm
+        log("baseline", json.dumps(report["baseline"]))
+    else:
+        log("baseline: no holdout_B_best.pt under", BASELINE)
 for st in STAGES:
     report["stages"].append(train_stage(st["name"], st["neg"], st["epochs"]))
     (OUT / "s2_report.json").write_text(json.dumps(report, indent=1, default=str))
@@ -324,9 +336,11 @@ def main() -> None:
     hours = float(args.get("hours", 1.75)); val_every = int(args.get("val-every", 4)); seed = int(args.get("seed", 0))
     threads = int(args.get("threads", 0 if tpu else 4))
     pmax = int(args.get("pmax", 32)); pools = args.get("pools", "casmi26-s2-pools")   # PubChem negatives per query; pool set
+    baseline = args.get("baseline") or None
     script = (TEMPLATE.replace("__SMOKE__", str(smoke)).replace("__STAGES__", repr(stages))
               .replace("__REFIT__", repr(refit)).replace("__HOURS__", repr(hours)).replace("__VAL_EVERY__", str(val_every))
-              .replace("__SEED__", str(seed)).replace("__THREADS__", str(threads)).replace("__PMAX__", str(pmax)))
+              .replace("__SEED__", str(seed)).replace("__THREADS__", str(threads)).replace("__PMAX__", str(pmax))
+              .replace("__BASELINE__", repr(baseline)))
     ast.parse(script)
     out.mkdir(parents=True, exist_ok=True)
     (out / "s2_train.py").write_text(script)
@@ -335,7 +349,8 @@ def main() -> None:
             "language": "python", "kernel_type": "script", "is_private": True, "enable_gpu": gpu, "enable_tpu": tpu,
             "enable_internet": False, "dataset_sources": ["sanpier/casmi-spectrum-model-v1", "adityachauhanx/casmi26-s2-panel"],
             "competition_sources": ["enveda-CASMI26-molecule-id-mass-spectra"],
-            "kernel_sources": ["adityachauhanx/casmi26-s2-prep"] + [f"adityachauhanx/{pools}-{c}" for c in range(4)],
+            "kernel_sources": ["adityachauhanx/casmi26-s2-prep"] + [f"adityachauhanx/{pools}-{c}" for c in range(4)]
+                              + ([f"adityachauhanx/{baseline}"] if baseline else []),
             "model_sources": []}
     if gpu:
         meta["machine_shape"] = "NvidiaTeslaT4"
@@ -344,7 +359,7 @@ def main() -> None:
     (out / "kernel-metadata.json").write_text(json.dumps(meta, indent=1))
     print("written", out / "s2_train.py", len(script), "bytes", "| stages", stages, "| refit", refit, "| hours", hours,
           "| val every", val_every, "| seed offset", seed, "| slug", slug, "| threads", threads or "all", "| tpu" if tpu else "",
-          "| pmax", pmax, "| pools", pools)
+          "| pmax", pmax, "| pools", pools, "| baseline", baseline)
 
 
 if __name__ == "__main__":
