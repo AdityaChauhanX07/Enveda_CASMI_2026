@@ -192,10 +192,10 @@ Order after the Sat Nov 21 reset (each needs the user's OK; ~6-7 GPU h a scoring
 2. **T2** `casmi26-t2-tae495-s2` = T1 with S2 in place of v80 (built; notebook byte-identical to T1).
 3. S2 copies (seed 2, ...) for an all-S2 neural blend (T3), trained on GPU (~27 min each). The TPU-VM host-CPU
    smoke never left the queue (10:31-13:31 UTC on Nov 19) and was deleted, so S2 copies use the GPU.
-4. **U1** `casmi26-u1-union` (built, `tools/build_union.py`): T1's base and layers up to its external-library overlay +
-   heliosli's layers (FRIGID, rr3 FREEZE, p1, cvjoint, M5), FR / P5 left out; both run the same pinned pipeline.
-   Library guard: T1's external-library rank-1 picks are put back at rank 1 after heliosli's layers (which never saw
-   them). ~0.75 h smoke commit + ~8.5-8.9 h scoring. The bet for the second final; `casmi26-u1s-union-s2` = U1 with S2.
+4. ~~U1 union~~ dropped (Nov 21): heliosli's public datasets (the 0.496 notebook's layers) hold untrained demo weights
+   ("original competition weights excluded"; Kaggle also refuses the submission while they are attached unpinned).
+Results so far: T2 0.482 (S2 hurts the 0.495 notebook, -0.013), so the S2 fork bets (seed 2, T3, U1s) are dropped too.
+Next: T1 (taeyangg4's 0.495 verbatim, reproduced at 0.495 by a third party) for an own ~0.495 final, pending the OK.
 
 Earlier (2026-11-12):
 
